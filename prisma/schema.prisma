@@ -49,6 +49,7 @@ model SupportResource {
   minimumRequired   Int
   status            String   @default("AVAILABLE")
   updatedAt         DateTime @updatedAt
+  allocations       Allocation[]
 
   @@index([category])
 }
