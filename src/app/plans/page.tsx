@@ -121,7 +121,7 @@ export default function PlansPage() {
   }, [plans]);
 
   const rowChanges = useMemo(() => {
-    if (!selected) return [];
+    if (!selected) return { reassigned: 0, fresh: 0, released: 0 };
     let reassigned = 0;
     let fresh = 0;
     let released = 0;
