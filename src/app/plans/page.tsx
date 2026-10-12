@@ -182,26 +182,28 @@ export default function PlansPage() {
           }
         />
         {plans && plans.length > 0 ? (
-          <div className="flex flex-wrap gap-2 px-4 py-3 text-xs">
-            <ExplainPill label="Recommended" value={selected?.summaryParsed?.assigned ?? 0} tone="blue" />
-            <ExplainPill label="Blocked" value={selected?.summaryParsed?.blocked ?? 0} tone="red" />
-            <ExplainPill label="Unassigned" value={selected?.summaryParsed?.unassigned ?? 0} tone="amber" />
-            {selected?.summaryParsed?.carried ? <ExplainPill label="In force" value={selected.summaryParsed.carried} tone="slate" /> : null}
-            <ExplainPill
-              label="Aircraft / crew utilisation"
-              value={`${selected?.summaryParsed?.aircraftUtilisationPercent ?? 0}% / ${selected?.summaryParsed?.crewUtilisationPercent ?? 0}%`}
-              tone="green"
-            />
-            <span className="inline-flex items-center gap-1 border-2 border-ink/60 bg-paper px-2 py-0.5 text-ink/70">
-              Score = 40% priority + 20% readiness + 20% window fit + 20% resource efficiency
-            </span>
+          <div className="px-4 py-3 text-xs">
+            <div className="flex flex-wrap gap-2">
+              <ExplainPill label="Recommended" value={selected?.summaryParsed?.assigned ?? 0} tone="blue" />
+              <ExplainPill label="Blocked" value={selected?.summaryParsed?.blocked ?? 0} tone="red" />
+              <ExplainPill label="Unassigned" value={selected?.summaryParsed?.unassigned ?? 0} tone="amber" />
+              {selected?.summaryParsed?.carried ? <ExplainPill label="In force" value={selected.summaryParsed.carried} tone="slate" /> : null}
+              <ExplainPill
+                label="Aircraft / crew utilisation"
+                value={`${selected?.summaryParsed?.aircraftUtilisationPercent ?? 0}% / ${selected?.summaryParsed?.crewUtilisationPercent ?? 0}%`}
+                tone="green"
+              />
+              <span className="inline-flex items-center gap-1 border-2 border-ink/60 bg-paper px-2 py-0.5 text-ink/70">
+                Score = 40% priority + 20% readiness + 20% window fit + 20% resource efficiency
+              </span>
+            </div>
+            {(selected?.summaryParsed?.assigned ?? 0) === 0 && (selected?.summaryParsed?.carried ?? 0) > 0 ? (
+              <p className="mt-2 border-t-2 border-dashed border-ink/20 pt-2 text-ink/70">
+                Everything allocatable is already committed by the plan in force, so a fresh run has nothing new to add.
+                Edit fleet/crew/tasks to flag a change, then generate again to see recommendations.
+              </p>
+            ) : null}
           </div>
-          {(selected?.summaryParsed?.assigned ?? 0) === 0 && (selected?.summaryParsed?.carried ?? 0) > 0 ? (
-            <p className="border-t-2 border-dashed border-ink/20 px-4 py-2 text-xs text-ink/70">
-              Everything allocatable is already committed by the plan in force, so a fresh run has nothing new to add.
-              Edit fleet/crew/tasks to flag a change, then generate again to see recommendations.
-            </p>
-          ) : null}
         ) : null}
       </Card>
 
