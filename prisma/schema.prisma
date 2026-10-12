@@ -1,0 +1,136 @@
+// AIR POWER — Prisma schema (SQLite).
+// Enum-like fields are plain strings validated by Zod in src/lib/validation.ts,
+// because Prisma does not support native enums on the SQLite provider.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Aircraft {
+  id                      String       @id
+  name                    String
+  category                String
+  status                  String       @default("AVAILABLE")
+  readinessPercentage     Int          @default(100)
+  turnaroundMinutes       Int          @default(60)
+  maintenanceCompletionAt DateTime?
+  createdAt               DateTime     @default(now())
+  updatedAt               DateTime     @updatedAt
+  allocations             Allocation[]
+
+  @@index([status])
+  @@index([category])
+}
+
+model Crew {
+  id                   String       @id
+  displayName          String
+  qualificationCategory String
+  status               String       @default("AVAILABLE")
+  availableFrom        DateTime?
+  createdAt            DateTime     @default(now())
+  updatedAt            DateTime     @updatedAt
+  allocations          Allocation[]
+
+  @@index([status])
+  @@index([qualificationCategory])
+}
+
+model SupportResource {
+  id                String   @id
+  name              String
+  category          String
+  availableQuantity Int
+  minimumRequired   Int
+  status            String   @default("AVAILABLE")
+  updatedAt         DateTime @updatedAt
+
+  @@index([category])
+}
+
+model SimulatedRegion {
+  id            String   @id
+  name          String
+  weatherStatus String   @default("NORMAL")
+  airspaceStatus String  @default("OPEN")
+  updatedAt     DateTime @updatedAt
+  tasks         OperationalTask[]
+}
+
+model OperationalTask {
+  id                        String   @id
+  title                     String
+  category                  String
+  priority                  String
+  requiredAircraftCategory  String
+  requiredCrewQualification String
+  requiredResourceCategory  String
+  requiredResourceQuantity  Int      @default(1)
+  constraintNotes           String?
+  simulatedRegionId         String
+  startsAt                  DateTime
+  endsAt                    DateTime
+  status                    String   @default("PENDING")
+  createdAt                 DateTime @default(now())
+  updatedAt                 DateTime @updatedAt
+
+  region      SimulatedRegion @relation(fields: [simulatedRegionId], references: [id])
+  allocations Allocation[]
+
+  @@index([status])
+  @@index([priority])
+  @@index([simulatedRegionId])
+}
+
+model AllocationPlan {
+  id          String       @id @default(cuid())
+  status      String       @default("GENERATED")
+  generatedAt DateTime     @default(now())
+  appliedAt   DateTime?
+  dataVersion String
+  summary     String
+  allocations Allocation[]
+
+  @@index([status])
+  @@index([generatedAt])
+}
+
+model Allocation {
+  id          String   @id @default(cuid())
+  planId      String
+  taskId      String
+  aircraftId  String?
+  crewId      String?
+  resourceId  String?
+  status      String
+  score       Float    @default(0)
+  explanation String
+  breakdown   String?
+
+  plan     AllocationPlan   @relation(fields: [planId], references: [id], onDelete: Cascade)
+  task     OperationalTask  @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  aircraft Aircraft?        @relation(fields: [aircraftId], references: [id])
+  crew     Crew?            @relation(fields: [crewId], references: [id])
+  resource SupportResource? @relation(fields: [resourceId], references: [id])
+
+  @@index([planId])
+  @@index([taskId])
+  @@index([status])
+}
+
+model ActivityLog {
+  id          String   @id @default(cuid())
+  eventType   String
+  description String
+  entityType  String?
+  entityId    String?
+  createdAt   DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([eventType])
+}
