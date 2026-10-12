@@ -1,5 +1,6 @@
-import { allocate, type AllocationOutcome } from "@/lib/allocation";
+import { allocate } from "@/lib/allocation";
 import { ServiceError } from "@/lib/api";
+import { Prisma } from "@prisma/client";
 import { CLOSED_TASK_STATUSES, type TaskStatus } from "@/lib/domain";
 import {
   applyPlan,
@@ -319,7 +320,7 @@ export async function updateAircraft(id: string, patch: Partial<AircraftRow> & {
 }
 
 /** Re-evaluates tasks touched by an airframe change. */
-async function flagTasksForAircraft(tx: typeof db, aircraftId: string): Promise<string[]> {
+async function flagTasksForAircraft(tx: Prisma.TransactionClient, aircraftId: string): Promise<string[]> {
   const aircraft = await tx.aircraft.findUnique({ where: { id: aircraftId } });
   if (!aircraft) return [];
   const usable = ["AVAILABLE", "ASSIGNED"].includes(aircraft.status) && aircraft.readinessPercentage >= MIN_READINESS;
@@ -363,9 +364,11 @@ export async function updateCrew(id: string, patch: Partial<CrewRow> & { availab
       422
     );
   }
-  if (next.status === "AVAILABLE" && (!next.availableFrom || next.availableFrom.getTime() > Date.now())) {
-    // availableFrom is optional; when set for an available member it must be in the past
-    if (next.availableFrom) throw new ServiceError(`${id} is marked Available but its "available from" date is in the future.`, 422);
+  if (next.status === "AVAILABLE" && next.availableFrom && next.availableFrom.getTime() > Date.now()) {
+    throw new ServiceError(
+      `${id} is marked Available but its "available from" date is in the future. Move it into the past or change the status.`,
+      422
+    );
   }
 
   return prisma.$transaction(async (tx) => {
@@ -384,7 +387,7 @@ export async function updateCrew(id: string, patch: Partial<CrewRow> & { availab
   });
 }
 
-async function flagTasksForCrew(tx: typeof db, crewId: string): Promise<string[]> {
+async function flagTasksForCrew(tx: Prisma.TransactionClient, crewId: string): Promise<string[]> {
   const crew = await tx.crew.findUnique({ where: { id: crewId } });
   if (!crew) return [];
   const usable = ["AVAILABLE", "ASSIGNED"].includes(crew.status);
@@ -598,7 +601,7 @@ async function scenarioAircraftUnavailable(input: ScenarioActivateInput): Promis
   if (!target) throw new ServiceError("No aircraft is available to simulate this event.", 422);
   if (target.status === "UNAVAILABLE") throw new ServiceError(`${target.id} is already unavailable.`, 422);
 
-  const committed = await commitScenario(
+  const committed = await prisma.$transaction(
     async (tx) => {
       const plan = await tx.allocationPlan.findFirst({ where: { status: "APPLIED" }, orderBy: { appliedAt: "desc" } });
       const taskIds = plan
@@ -635,8 +638,7 @@ async function scenarioAircraftUnavailable(input: ScenarioActivateInput): Promis
       });
 
       return { affected, taskIds };
-    },
-    () => getDataVersion()
+    }
   );
 
   return {
@@ -835,12 +837,6 @@ function pickBusiestRegion(regions: RegionRow[], tasks: TaskRow[]): RegionRow | 
     const diff = load(b) - load(a);
     return diff !== 0 ? diff : a.id.localeCompare(b.id);
   })[0];
-}
-
-async function commitScenario<T>(work: (tx: typeof db) => Promise<T>, after?: () => Promise<string>): Promise<T> {
-  const result = await prisma.$transaction(work);
-  void after;
-  return result;
 }
 
 async function describeTasks(ids: string[]) {
