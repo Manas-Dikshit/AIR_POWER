@@ -64,7 +64,7 @@ export const PLAN_STATUSES = ["GENERATED", "APPLIED", "SUPERSEDED"] as const;
 export type PlanStatus = (typeof PLAN_STATUSES)[number];
 
 // Allocation outcomes that can be persisted against a task.
-export const ALLOCATION_STATUSES = ["RECOMMENDED", "ASSIGNED", "BLOCKED", "UNASSIGNED"] as const;
+export const ALLOCATION_STATUSES = ["RECOMMENDED", "ASSIGNED", "BLOCKED", "UNASSIGNED", "RELEASED"] as const;
 export type AllocationStatus = (typeof ALLOCATION_STATUSES)[number];
 
 export const PRIORITY_RANK: Record<TaskPriority, number> = {
@@ -129,6 +129,7 @@ export const HUMAN_LABELS: Record<string, string> = {
   GENERATED: "Generated",
   APPLIED: "Applied",
   SUPERSEDED: "Superseded",
+  RELEASED: "Released",
   UNASSIGNED: "Unassigned",
   WEATHER: "Weather",
   AIRSPACE: "Airspace",

@@ -1,5 +1,5 @@
 import { PRIORITY_RANK, PRIORITY_WEIGHT, type TaskPriority } from "./domain";
-import { POLICY, isAirspaceBlocked, isWeatherBlocked } from "./policy";
+import { POLICY, regionBlockReason } from "./policy";
 
 /**
  * Allocation engine.
@@ -208,6 +208,16 @@ export function allocate(input: AllocationInput): AllocationOutcome {
   const crewBookings = new Map<string, Interval[]>();
   const remainingQuantity = new Map(input.resources.map((r) => [r.id, r.availableQuantity]));
 
+  // Reserve what the plan in force is already flying.
+  for (const pre of input.prebooked ?? []) {
+    const interval = { start: pre.start.getTime(), end: pre.end.getTime() };
+    if (pre.aircraftId) aircraftBookings.set(pre.aircraftId, [...(aircraftBookings.get(pre.aircraftId) ?? []), interval]);
+    if (pre.crewId) crewBookings.set(pre.crewId, [...(crewBookings.get(pre.crewId) ?? []), interval]);
+    if (pre.resourceId && remainingQuantity.has(pre.resourceId)) {
+      remainingQuantity.set(pre.resourceId, Math.max(0, (remainingQuantity.get(pre.resourceId) ?? 0) - pre.quantity));
+    }
+  }
+
   const assignments: RecommendedAssignment[] = [];
   const blocked: RejectedTask[] = [];
   const unassigned: RejectedTask[] = [];
@@ -236,24 +246,9 @@ export function allocate(input: AllocationInput): AllocationOutcome {
       blocked.push(reject(task, "BLOCKED", "Blocked: the task references an unknown operating region."));
       continue;
     }
-    if (region.weatherStatus === "RESTRICTED" && isWeatherBlocked(task.category)) {
-      blocked.push(
-        reject(
-          task,
-          "BLOCKED",
-          `Blocked: weather over ${region.name} is Restricted and standing policy suspends ${task.category} tasks there.`
-        )
-      );
-      continue;
-    }
-    if (region.airspaceStatus === "RESTRICTED" && isAirspaceBlocked(task.category)) {
-      blocked.push(
-        reject(
-          task,
-          "BLOCKED",
-          `Blocked: airspace over ${region.name} is Restricted and standing policy suspends ${task.category} tasks there.`
-        )
-      );
+    const regionBlock = regionBlockReason(task.category, region);
+    if (regionBlock) {
+      blocked.push(reject(task, "BLOCKED", `Blocked: ${regionBlock}.`));
       continue;
     }
 
