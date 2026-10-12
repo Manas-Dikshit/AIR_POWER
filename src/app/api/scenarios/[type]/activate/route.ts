@@ -8,7 +8,7 @@ export const runtime = "nodejs";
 export async function POST(request: Request, { params }: { params: Promise<{ type: string }> }) {
   return handle(async () => {
     const { type } = await params;
-    const input = await parseBody(request, scenarioActivateSchema);
+    const input = (await parseBody(request, scenarioActivateSchema)) ?? {};
     return ok(await activateScenario(type, input));
   });
 }

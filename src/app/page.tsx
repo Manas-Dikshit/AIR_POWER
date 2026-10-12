@@ -127,7 +127,7 @@ export default function OverviewPage() {
                 <YAxis allowDecimals={false} tick={{ fill: "#1f2430", fontSize: 12 }} width={28} />
                 <Tooltip
                   contentStyle={{ border: "2px solid #1f2430", borderRadius: 8, background: "#fbf8f1", fontSize: 12 }}
-                  formatter={(value: number, name: string) => [value, humanStatus(name)]}
+                  formatter={(value, name) => [value, humanStatus(String(name))]}
                 />
                 <Legend formatter={(value: string) => <span className="text-xs text-ink/80">{humanStatus(value)}</span>} />
                 <Bar dataKey="available" stackId="a" fill={CHART_COLOURS.available} />
@@ -153,7 +153,7 @@ export default function OverviewPage() {
                 <YAxis type="category" dataKey="label" width={92} tick={{ fill: "#1f2430", fontSize: 12 }} />
                 <Tooltip
                   contentStyle={{ border: "2px solid #1f2430", borderRadius: 8, background: "#fbf8f1", fontSize: 12 }}
-                  formatter={(value: number) => [value, "Tasks"]}
+                  formatter={(value) => [value, "Tasks"]}
                 />
                 <Bar dataKey="count">
                   {taskChart.map((row) => (
