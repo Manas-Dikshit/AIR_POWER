@@ -1,6 +1,5 @@
 import { handle, ok } from "@/lib/api";
 import { getDataVersion, getRegions, getTasks } from "@/lib/repository";
-import { activateScenario } from "@/services/operations-orchestrator";
 import { getLatestAppliedPlan } from "@/lib/plans";
 import { ScenarioActivateInput } from "@/lib/validation";
 

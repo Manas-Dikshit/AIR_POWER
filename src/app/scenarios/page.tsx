@@ -15,12 +15,11 @@ import {
   TD,
   TH,
   Table,
-  cn,
   humanStatus,
 } from "@/components/ui";
 import { apiPost, notifyChanged, useApi } from "@/lib/client";
 import { useToast } from "@/components/ui";
-import { formatWhen, humanise } from "@/lib/format";
+import { formatWhen } from "@/lib/format";
 
 type RegionRow = {
   id: string;
@@ -30,6 +29,7 @@ type RegionRow = {
 };
 
 type ScenarioView = {
+  dataVersion: string;
   regions: RegionRow[];
   tasks: Array<{ id: string; title: string; priority: string; status: string; category: string; constraintNotes: string | null }>;
   planInForce: { id: string; appliedAt: string; dataVersion: string } | null;

@@ -304,9 +304,9 @@ export function allocate(input: AllocationInput): AllocationOutcome {
       );
       continue;
     }
-    const usableResources = sameResourceCategory.filter((r) => isResourceUsable(r, task, remainingQuantity, minReadiness));
+    const usableResources = sameResourceCategory.filter((r) => isResourceUsable(r, task, remainingQuantity));
     if (usableResources.length === 0) {
-      blocked.push(reject(task, "BLOCKED", resourceBlockReason(sameResourceCategory, task, remainingQuantity)));
+      blocked.push(reject(task, "BLOCKED", resourceBlockReason(sameResourceCategory, task)));
       continue;
     }
 
@@ -426,23 +426,14 @@ function isCrewUsableNow(c: AllocationCrew, task: AllocationTask, now: number): 
   return from <= task.startsAt.getTime();
 }
 
-function isResourceUsable(
-  r: AllocationResource,
-  task: AllocationTask,
-  remaining: Map<string, number>,
-  _minReadiness: number
-): boolean {
+function isResourceUsable(r: AllocationResource, task: AllocationTask, remaining: Map<string, number>): boolean {
   if (r.status === "UNAVAILABLE") return false;
   if ((remaining.get(r.id) ?? 0) < task.requiredResourceQuantity) return false;
   if (POLICY.resourceDeferralEnabled && r.availableQuantity < r.minimumRequired) return false;
   return true;
 }
 
-function resourceBlockReason(
-  sameCategory: AllocationResource[],
-  task: AllocationTask,
-  remaining: Map<string, number>
-): string {
+function resourceBlockReason(sameCategory: AllocationResource[], task: AllocationTask): string {
   const belowMinimum = sameCategory.find((r) => r.availableQuantity < r.minimumRequired);
   if (belowMinimum && POLICY.resourceDeferralEnabled) {
     return `Deferred: the required support resource ${belowMinimum.name} is below the configured minimum (${belowMinimum.availableQuantity} of ${belowMinimum.minimumRequired}).`;

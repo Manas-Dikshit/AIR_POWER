@@ -4,7 +4,6 @@ import { ServiceError } from "./errors";
 import { POLICY } from "./policy";
 import {
   getDataVersion,
-  logActivity,
   readOperationalDataSet,
   type AircraftRow,
   type CrewRow,

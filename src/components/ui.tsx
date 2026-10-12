@@ -496,7 +496,6 @@ export function ToastProvider({ children }: { children: ReactNode }) {
             role="status"
             className={cn(
               "sketch pointer-events-auto bg-white px-3 py-2 sketch-shadow-sm",
-              item.tone === "rotate-b" && "",
               item.tone === "success" && "border-emerald-700",
               item.tone === "error" && "border-red-700",
               item.tone === "info" && "border-accent"
