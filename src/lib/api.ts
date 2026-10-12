@@ -1,5 +1,8 @@
 import { NextResponse } from "next/server";
 import { ZodError, type ZodSchema } from "zod";
+import { ServiceError } from "./errors";
+
+export { ServiceError };
 
 export function ok<T>(data: T, status = 200) {
   return NextResponse.json({ data }, { status });
@@ -7,18 +10,6 @@ export function ok<T>(data: T, status = 200) {
 
 export function fail(message: string, status = 400, details?: unknown) {
   return NextResponse.json({ error: { message, details } }, { status });
-}
-
-/** Thrown by service functions; mapped to a JSON response by `handle`. */
-export class ServiceError extends Error {
-  constructor(
-    message: string,
-    public status = 400,
-    public details?: unknown
-  ) {
-    super(message);
-    this.name = "ServiceError";
-  }
 }
 
 /** Wraps a route handler with consistent error mapping. */

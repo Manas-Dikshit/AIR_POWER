@@ -331,11 +331,16 @@ export function allocate(input: AllocationInput): AllocationOutcome {
       for (const crew of freeCrew) {
         for (const resource of usableResources) {
           const remaining = remainingQuantity.get(resource.id) ?? 0;
+          // "Resource utilisation efficiency" blends how tightly the support
+          // resource fits the requirement with how evenly the airframe fleet is
+          // being used, so a single aircraft is not favoured for every task.
+          const resourceFit = clamp01(task.requiredResourceQuantity / Math.max(1, remaining));
+          const airframeSpread = 1 / (1 + (aircraftBookings.get(aircraft.id)?.length ?? 0));
           const breakdown: CandidateBreakdown = {
             priority: PRIORITY_WEIGHT[task.priority as TaskPriority] ?? 0.25,
             readiness: clamp01(aircraft.readinessPercentage / 100),
             timeWindow: clamp01(1 - aircraft.turnaroundMinutes / TURNAROUND_HORIZON_MINUTES),
-            efficiency: clamp01(task.requiredResourceQuantity / Math.max(1, remaining)),
+            efficiency: clamp01((resourceFit + airframeSpread) / 2),
           };
           const score = scoreFrom(breakdown);
           if (!best || betterThan(score, { aircraftId: aircraft.id, crewId: crew.id, resourceId: resource.id }, best)) {

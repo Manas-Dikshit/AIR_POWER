@@ -1,5 +1,5 @@
 import { allocate } from "@/lib/allocation";
-import { ServiceError } from "@/lib/api";
+import { ServiceError } from "@/lib/errors";
 import { Prisma } from "@prisma/client";
 import { CLOSED_TASK_STATUSES, type TaskStatus } from "@/lib/domain";
 import {

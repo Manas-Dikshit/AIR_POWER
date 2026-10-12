@@ -1,6 +1,6 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "./prisma";
-import { ServiceError } from "./api";
+import { ServiceError } from "./errors";
 import { POLICY } from "./policy";
 import {
   getDataVersion,
