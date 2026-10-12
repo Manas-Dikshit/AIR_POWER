@@ -18,7 +18,8 @@ import {
   cn,
   toneFor,
 } from "@/components/ui";
-import { apiPost, notifyChanged, useApi, useToast } from "@/lib/client";
+import { apiPost, notifyChanged, useApi } from "@/lib/client";
+import { useToast } from "@/components/ui";
 import { formatWhen } from "@/lib/format";
 
 type AllocationRow = {

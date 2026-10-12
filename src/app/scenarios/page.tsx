@@ -18,7 +18,8 @@ import {
   cn,
   humanStatus,
 } from "@/components/ui";
-import { apiPost, notifyChanged, useApi, useToast } from "@/lib/client";
+import { apiPost, notifyChanged, useApi } from "@/lib/client";
+import { useToast } from "@/components/ui";
 import { formatWhen, humanise } from "@/lib/format";
 
 type RegionRow = {
