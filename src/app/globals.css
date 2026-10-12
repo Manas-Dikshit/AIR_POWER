@@ -1,0 +1,90 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ------------------------------------------------------------------ paper */
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background-color: #fbf8f1;
+  background-image: radial-gradient(rgba(31, 36, 48, 0.13) 1px, transparent 1px);
+  background-size: 20px 20px;
+  color: #1f2430;
+  font-family: Inter, "Segoe UI", system-ui, sans-serif;
+}
+
+.font-hand {
+  font-family: Caveat, "Segoe Print", "Bradley Hand", "Comic Sans MS", cursive;
+  letter-spacing: 0.01em;
+}
+
+/* Hand-drawn boxes: irregular radii on both axes look drawn, not printed. */
+.sketch {
+  border: 2px solid #1f2430;
+  border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px;
+}
+.sketch-2 {
+  border: 2px solid #1f2430;
+  border-radius: 15px 225px 15px 255px / 225px 15px 255px 15px;
+}
+.sketch-3 {
+  border: 2px solid #1f2430;
+  border-radius: 125px 10px 115px 12px / 12px 115px 10px 125px;
+}
+.sketch-shadow {
+  box-shadow: 4px 4px 0 0 #1f2430;
+}
+.sketch-shadow-sm {
+  box-shadow: 2px 2px 0 0 #1f2430;
+}
+.sketch-shadow-accent {
+  box-shadow: 4px 4px 0 0 #2f6fed;
+}
+
+.rotate-a {
+  transform: rotate(-0.5deg);
+}
+.rotate-b {
+  transform: rotate(0.45deg);
+}
+.rotate-c {
+  transform: rotate(-0.25deg);
+}
+
+.tick {
+  border-bottom: 2px dashed rgba(31, 36, 48, 0.28);
+}
+
+.hatch {
+  background-image: repeating-linear-gradient(
+    45deg,
+    rgba(31, 36, 48, 0.12) 0,
+    rgba(31, 36, 48, 0.12) 1px,
+    transparent 1px,
+    transparent 7px
+  );
+}
+
+.nav-ink {
+  background-color: #0f1a2e;
+  background-image: radial-gradient(rgba(255, 255, 255, 0.07) 1px, transparent 1px);
+  background-size: 16px 16px;
+}
+
+/* Keep the loose hand-drawn feel while scrolling dense tables. */
+table.hand-rows tbody tr:nth-child(even) {
+  background-color: rgba(31, 36, 48, 0.03);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(31, 36, 48, 0.35);
+  border-radius: 8px;
+}
