@@ -667,7 +667,7 @@ async function scenarioWeatherRestriction(input: ScenarioActivateInput): Promise
     (t) => t.simulatedRegionId === target.id && !CLOSED_TASK_STATUSES.includes(t.status as TaskStatus)
   );
 
-  const committed = await commitScenario(async (tx) => {
+  const committed = await prisma.$transaction(async (tx) => {
     await tx.simulatedRegion.update({ where: { id: target.id }, data: { weatherStatus: "RESTRICTED" } });
     const affected: string[] = [];
     for (const task of openHere.filter((t) => isWeatherBlocked(t.category))) {
@@ -720,7 +720,7 @@ async function scenarioAirspaceRestriction(input: ScenarioActivateInput): Promis
     (t) => t.simulatedRegionId === target.id && !CLOSED_TASK_STATUSES.includes(t.status as TaskStatus)
   );
 
-  const committed = await commitScenario(async (tx) => {
+  const committed = await prisma.$transaction(async (tx) => {
     await tx.simulatedRegion.update({ where: { id: target.id }, data: { airspaceStatus: "RESTRICTED" } });
     const affected: string[] = [];
     for (const task of openHere.filter((t) => isAirspaceBlocked(t.category))) {
@@ -783,7 +783,7 @@ async function scenarioMaintenanceDelay(input: ScenarioActivateInput): Promise<S
       t.startsAt.getTime() < after.getTime()
   );
 
-  const committed = await commitScenario(async (tx) => {
+  const committed = await prisma.$transaction(async (tx) => {
     await tx.aircraft.update({
       where: { id: target.id },
       data: { maintenanceCompletionAt: after, readinessPercentage: Math.max(10, target.readinessPercentage - 15) },
