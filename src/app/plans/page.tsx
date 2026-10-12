@@ -16,7 +16,6 @@ import {
   TH,
   Table,
   cn,
-  toneFor,
 } from "@/components/ui";
 import { apiPost, notifyChanged, useApi } from "@/lib/client";
 import { useToast } from "@/components/ui";
@@ -311,7 +310,7 @@ export default function PlansPage() {
                             <span className="block text-xs">{row.task.title}</span>
                           </TD>
                           <TD>
-                            <Badge tone={toneFor(row.task.status)}>{row.task.priority}</Badge>
+                            <PriorityBadge priority={row.task.priority} />
                           </TD>
                           <TD className="whitespace-nowrap text-xs">{row.task.region.name}</TD>
                           <TD className="text-xs">
@@ -378,6 +377,11 @@ export default function PlansPage() {
       ) : null}
     </div>
   );
+}
+
+function PriorityBadge({ priority }: { priority: string }) {
+  const tone = { CRITICAL: "red", HIGH: "amber", MEDIUM: "blue", LOW: "slate" } as const;
+  return <Badge tone={tone[priority as keyof typeof tone] ?? "slate"}>{priority}</Badge>;
 }
 
 function ExplainPill({ label, value, tone }: { label: string; value: string | number; tone: string }) {
