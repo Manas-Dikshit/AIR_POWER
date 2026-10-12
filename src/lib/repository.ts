@@ -1,4 +1,5 @@
 import { createHash } from "crypto";
+import { Prisma } from "@prisma/client";
 import { prisma } from "./prisma";
 import type {
   AllocationAircraft,
@@ -163,4 +164,50 @@ export async function nextTaskId(): Promise<string> {
     return Number.isFinite(n) && n > max ? n : max;
   }, 0);
   return `TASK-${String(highest + 1).padStart(3, "0")}`;
+}
+
+/**
+ * Rolls back the resources a task is holding while it is assigned: the support
+ * resource quantity is returned and the airframe/crew are released (only if no
+ * other task in the plan in force still needs them). Called whenever a task
+ * leaves the ASSIGNED state, so the inventory never leaks.
+ */
+export async function releaseTaskAssignment(tx: Prisma.TransactionClient, taskId: string) {
+  const plan = await tx.allocationPlan.findFirst({ where: { status: "APPLIED" }, orderBy: { appliedAt: "desc" } });
+  if (!plan) return null;
+
+  const allocation = await tx.allocation.findFirst({ where: { planId: plan.id, taskId, status: "ASSIGNED" } });
+  if (!allocation) return null;
+
+  const task = await tx.operationalTask.findUnique({ where: { id: taskId } });
+  if (!task) return null;
+
+  await tx.allocation.update({ where: { id: allocation.id }, data: { status: "RELEASED" } });
+
+  if (allocation.resourceId) {
+    const resource = await tx.supportResource.findUnique({ where: { id: allocation.resourceId } });
+    if (resource) {
+      const restored = resource.availableQuantity + task.requiredResourceQuantity;
+      await tx.supportResource.update({
+        where: { id: resource.id },
+        data: { availableQuantity: restored, status: restored < resource.minimumRequired ? "LOW" : "AVAILABLE" },
+      });
+    }
+  }
+
+  const stillUsed = async (field: "aircraftId" | "crewId", value: string) => {
+    const count = await tx.allocation.count({
+      where: { planId: plan.id, status: "ASSIGNED", [field]: value },
+    });
+    return count > 0;
+  };
+
+  if (allocation.aircraftId && !(await stillUsed("aircraftId", allocation.aircraftId))) {
+    await tx.aircraft.updateMany({ where: { id: allocation.aircraftId, status: "ASSIGNED" }, data: { status: "AVAILABLE" } });
+  }
+  if (allocation.crewId && !(await stillUsed("crewId", allocation.crewId))) {
+    await tx.crew.updateMany({ where: { id: allocation.crewId, status: "ASSIGNED" }, data: { status: "AVAILABLE" } });
+  }
+
+  return allocation;
 }
