@@ -74,7 +74,7 @@ function parseBreakdown(raw: string | null): Breakdown | null {
   }
 }
 
-const fingerprint = (row: AllocationRow) => `${row.aircraftId ?? "—"} / ${row.crewId ?? "—"}`;
+const fingerprint = (row: AllocationRow) => `${row.aircraft?.id ?? "—"} / ${row.crew?.id ?? "—"}`;
 
 type ChangeKind = "IN_FORCE" | "UNCHANGED" | "REASSIGNED" | "NEW" | "DROPPED" | "OTHER";
 
