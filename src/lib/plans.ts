@@ -21,6 +21,7 @@ import type { AllocationOutcome, PrebookedAssignment, RecommendedAssignment } fr
 
 export type PlanSummary = {
   assigned: number;
+  carried: number;
   unassigned: number;
   blocked: number;
   skipped: number;
@@ -33,7 +34,7 @@ export type PlanSummary = {
 
 const PLANNABLE = ["PENDING", "RECOMMENDED", "BLOCKED"];
 
-export function buildSummary(outcome: AllocationOutcome): PlanSummary {
+export function buildSummary(outcome: AllocationOutcome, carried = 0): PlanSummary {
   const notes: string[] = [];
   if (outcome.assignments.length === 0) notes.push("No task could be served with the resources available.");
   if (outcome.blocked.length > 0)
@@ -44,6 +45,7 @@ export function buildSummary(outcome: AllocationOutcome): PlanSummary {
 
   return {
     assigned: outcome.assignments.length,
+    carried,
     unassigned: outcome.unassigned.length,
     blocked: outcome.blocked.length,
     skipped: outcome.skipped.length,
@@ -55,10 +57,37 @@ export function buildSummary(outcome: AllocationOutcome): PlanSummary {
   };
 }
 
+/**
+ * Assignments still committed by the plan in force that a fresh run chose not to
+ * touch (their tasks were "already assigned"). They are mirrored into the new
+ * plan as ASSIGNED rows so the applied plan always lists every committed task —
+ * otherwise a task could be left in flight with no backing allocation and later
+ * edits could never release or reserve it again.
+ */
+async function carriedAssignments(outcome: AllocationOutcome) {
+  const ids = outcome.skipped.filter((s) => s.status === "ASSIGNED").map((s) => s.taskId);
+  if (ids.length === 0) return [];
+  const plan = await getLatestAppliedPlan();
+  if (!plan) return [];
+  return plan.allocations.filter((a) => a.status === "ASSIGNED" && ids.includes(a.taskId));
+}
+
 /** Persists a plan and its allocation rows in one transaction. */
 export async function createPlan(dataVersion: string, outcome: AllocationOutcome) {
-  const summary = buildSummary(outcome);
+  const carried = await carriedAssignments(outcome);
+  const summary = buildSummary(outcome, carried.length);
   const rows: Prisma.AllocationCreateManyInput[] = [
+    ...carried.map((a) => ({
+      planId: "",
+      taskId: a.taskId,
+      aircraftId: a.aircraftId,
+      crewId: a.crewId,
+      resourceId: a.resourceId,
+      status: "ASSIGNED",
+      score: a.score,
+      explanation: "Carried over from the plan in force; still committed to the same airframe, crew and support holding.",
+      breakdown: null,
+    })),
     ...outcome.assignments.map((a) => ({
       planId: "",
       taskId: a.taskId,
@@ -153,6 +182,14 @@ export function validatePlanAssignments(
     const task = taskById.get(a.taskId);
     if (!task) {
       problems.push(`Task ${a.taskId} no longer exists.`);
+      continue;
+    }
+    if (a.status === "ASSIGNED") {
+      // Carried-in-force rows must still be committed; anything else means the
+      // ledger is stale and the plan must be regenerated.
+      if (task.status !== "ASSIGNED") {
+        problems.push(`Task ${a.taskId} was released after this plan was generated (now ${task.status}). Generate a fresh plan.`);
+      }
       continue;
     }
     if (!PLANNABLE.includes(task.status) && a.status === "RECOMMENDED") {

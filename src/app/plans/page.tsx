@@ -50,6 +50,7 @@ type PlanRow = {
   dataVersion: string;
   summaryParsed: {
     assigned: number;
+    carried: number;
     unassigned: number;
     blocked: number;
     skipped: number;
@@ -185,6 +186,7 @@ export default function PlansPage() {
             <ExplainPill label="Recommended" value={selected?.summaryParsed?.assigned ?? 0} tone="blue" />
             <ExplainPill label="Blocked" value={selected?.summaryParsed?.blocked ?? 0} tone="red" />
             <ExplainPill label="Unassigned" value={selected?.summaryParsed?.unassigned ?? 0} tone="amber" />
+            {selected?.summaryParsed?.carried ? <ExplainPill label="In force" value={selected.summaryParsed.carried} tone="slate" /> : null}
             <ExplainPill
               label="Aircraft / crew utilisation"
               value={`${selected?.summaryParsed?.aircraftUtilisationPercent ?? 0}% / ${selected?.summaryParsed?.crewUtilisationPercent ?? 0}%`}
@@ -194,6 +196,12 @@ export default function PlansPage() {
               Score = 40% priority + 20% readiness + 20% window fit + 20% resource efficiency
             </span>
           </div>
+          {(selected?.summaryParsed?.assigned ?? 0) === 0 && (selected?.summaryParsed?.carried ?? 0) > 0 ? (
+            <p className="border-t-2 border-dashed border-ink/20 px-4 py-2 text-xs text-ink/70">
+              Everything allocatable is already committed by the plan in force, so a fresh run has nothing new to add.
+              Edit fleet/crew/tasks to flag a change, then generate again to see recommendations.
+            </p>
+          ) : null}
         ) : null}
       </Card>
 
@@ -237,6 +245,7 @@ export default function PlansPage() {
                     <span className="mt-1 block text-[11px] text-ink/55">
                       {plan.summaryParsed?.assigned ?? 0} recommended · {plan.summaryParsed?.blocked ?? 0} blocked ·{" "}
                       {plan.summaryParsed?.unassigned ?? 0} unassigned
+                      {plan.summaryParsed?.carried ? ` · ${plan.summaryParsed.carried} in force` : ""}
                     </span>
                   </button>
                 </li>

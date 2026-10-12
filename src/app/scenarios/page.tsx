@@ -133,6 +133,7 @@ export default function ScenariosPage() {
     if (!revisedPlan) return [];
     const rows: DiffRow[] = [];
     for (const allocation of revisedPlan.allocations) {
+      if (allocation.status === "ASSIGNED") continue; // carried in force, unchanged
       const previous = previousMap.get(allocation.taskId);
       const revised = `${allocation.aircraft?.id ?? "—"} / ${allocation.crew?.id ?? "—"}`;
       if (allocation.status === "RECOMMENDED") {
