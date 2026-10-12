@@ -22,7 +22,8 @@ import {
   Textarea,
   humanStatus,
 } from "@/components/ui";
-import { apiDelete, apiPatch, apiPost, notifyChanged, useApi, useToast } from "@/lib/client";
+import { apiDelete, apiPatch, apiPost, notifyChanged, useApi } from "@/lib/client";
+import { useToast } from "@/components/ui";
 import {
   AIRCRAFT_CATEGORIES,
   QUALIFICATION_CATEGORIES,
