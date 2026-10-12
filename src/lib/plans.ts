@@ -199,8 +199,10 @@ export function validatePlanAssignments(
     if (!resource) problems.push(`Support resource ${a.resourceId} for ${a.taskId} no longer exists.`);
     else {
       if (resource.status === "UNAVAILABLE") problems.push(`Support resource ${resource.name} for ${a.taskId} is unavailable.`);
-      if (resource.availableQuantity < POLICY.minimumRequiredForRelease(resource))
-        problems.push(`Support resource ${resource.name} is below its release minimum.`);
+      if (POLICY.resourceDeferralEnabled && resource.availableQuantity < resource.minimumRequired)
+        problems.push(
+          `Support resource ${resource.name} is below its configured minimum (${resource.availableQuantity} of ${resource.minimumRequired}).`
+        );
       const total = (consumed.get(resource.id) ?? 0) + task.requiredResourceQuantity;
       consumed.set(resource.id, total);
       if (total > resource.availableQuantity)
@@ -335,33 +337,30 @@ export function assignmentFingerprint(allocations: { taskId: string; aircraftId:
   );
 }
 
-export type AppliedAssignment = {
-  taskId: string;
-  taskTitle: string;
-  priority: string;
-  status: string;
-  aircraftId: string | null;
-  crewId: string | null;
-} & Partial<RecommendedAssignment>;
-
+/** The assignments in force right now, joined with task detail for the UI. */
 export async function getActiveAssignments() {
   const plan = await getLatestAppliedPlan();
   if (!plan) return [];
-  const tasks = await readOperationalDataSet().then((d) => d.tasks);
+  const tasks = await prisma.operationalTask.findMany({ include: { region: true } });
   const byId = new Map(tasks.map((t) => [t.id, t]));
   return plan.allocations
     .filter((a) => a.status === "ASSIGNED")
-    .map((a) => ({
-      taskId: a.taskId,
-      taskTitle: byId.get(a.taskId)?.title ?? a.taskId,
-      priority: byId.get(a.taskId)?.priority ?? "—",
-      aircraftId: a.aircraftId,
-      crewId: a.crewId,
-      resourceId: a.resourceId,
-      score: a.score,
-      explanation: a.explanation,
-      regionName: (byId.get(a.taskId) as (TaskRow & { regionName?: string }) | undefined)?.regionName,
-    }));
+    .map((a) => {
+      const task = byId.get(a.taskId);
+      return {
+        taskId: a.taskId,
+        taskTitle: task?.title ?? a.taskId,
+        priority: task?.priority ?? "—",
+        regionName: task?.region.name ?? "—",
+        aircraftId: a.aircraftId,
+        crewId: a.crewId,
+        resourceId: a.resourceId,
+        score: a.score,
+        explanation: a.explanation,
+        appliedAt: plan.appliedAt,
+      };
+    });
 }
 
 export type { AircraftRow, CrewRow, RegionRow, ResourceRow, TaskRow };
+export type { RecommendedAssignment };
