@@ -118,6 +118,21 @@ export type AllocationOutcome = {
   skipped: Array<{ taskId: string; status: string; reason: string }>;
 };
 
+/**
+ * Work already committed by the currently applied plan. Those bookings are
+ * reserved before the fresh run so a replan cannot silently steal an aircraft
+ * or crew member that is still flying a task we are not re-planning.
+ */
+export type PrebookedAssignment = {
+  taskId: string;
+  aircraftId: string | null;
+  crewId: string | null;
+  resourceId: string | null;
+  quantity: number;
+  start: Date;
+  end: Date;
+};
+
 export type AllocationInput = {
   now: Date;
   aircraft: AllocationAircraft[];
@@ -126,12 +141,18 @@ export type AllocationInput = {
   regions: AllocationRegion[];
   tasks: AllocationTask[];
   minReadiness?: number;
+  prebooked?: PrebookedAssignment[];
 };
 
 /** Statuses a fresh plan is allowed to (re)allocate. */
 const PLANNABLE_STATUSES = ["PENDING", "RECOMMENDED", "BLOCKED"];
 
-const NETWORK_READY_STATUSES = ["AVAILABLE"];
+/**
+ * ASSIGNED means "committed by the plan in force", not "physically broken", so
+ * a replan may reuse those airframes; their existing bookings are reserved via
+ * `prebooked`. MAINTENANCE and UNAVAILABLE are never allocated.
+ */
+const NETWORK_READY_STATUSES = ["AVAILABLE", "ASSIGNED"];
 
 /** Weights of the transparent scoring function. They sum to 1. */
 export const SCORE_WEIGHTS = {
