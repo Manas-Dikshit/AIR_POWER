@@ -1,0 +1,583 @@
+================================================================================
+AIR POWER — SYSTEM WORKFLOW
+End-to-end operating workflows for the SIH solution to
+MoD problem statement ID 26250 (simulated air-force support operations)
+================================================================================
+
+Document : Workflow Specification
+Version  : 1.0
+Date     : 2026-10-15
+Scope    : operator workflows, internal request flows, engine decision flow,
+           state machines, audit events and failure handling
+
+
+--------------------------------------------------------------------------------
+1. ACTORS AND SURFACES
+--------------------------------------------------------------------------------
+
+  PRIMARY ACTOR — the Operations Planner / duty operator.
+
+  Surfaces (all in one Next.js app, left-hand navigation):
+
+     Overview            /            situational picture, readiness, charts
+     Fleet & Crew        /fleet       airframes, crew, inventories
+     Tasks               /tasks       task backlog and windows
+     Allocation Plans    /plans       generate -> review -> apply -> revised
+     Scenario Simulator  /scenarios   what-if events + reset
+     Activity Log        /activity    append-only audit trail
+
+  SYSTEM ACTORS (internal):
+
+     Route handlers      validate + forward (no business logic)
+     Orchestrator        the only writer of operational state
+     Allocation engine   pure recommendation function
+     Plan store          persists, re-validates and applies plans
+     Policy file         all thresholds and suspension rules
+     Seed                deterministic world + initial applied plan
+
+  The operator is always in the loop: the engine RECOMMENDS, the operator
+  REVIEWS and APPLIES. Nothing is automatic between generate and apply.
+
+
+--------------------------------------------------------------------------------
+2. MASTER WORKFLOW (LIFETIME OF ONE PLANNING CYCLE)
+--------------------------------------------------------------------------------
+
+                +---------------------+
+   setup ------>|  W1  Seed the world |  (once; also on scenario reset)
+                +---------------------+
+                          |
+                          v
+                +---------------------+     read-only, continuous
+                |  W2  Monitor        |<----------------------------+
+                |  (Overview page)    |                             |
+                +---------------------+                             |
+                          |                                           |
+        +-----------------+-----------------+                         |
+        v                 v                 v                         |
+  +-----------+    +------------+    +--------------+                 |
+  | W3 Fleet  |    | W4 Tasks   |    | W5 Generate  |                 |
+  | & Crew    |    | CRUD       |    | a plan       |                 |
+  +-----------+    +------------+    +--------------+                 |
+        |                 |                 |                         |
+        |  (state changes flag or release tasks)                      |
+        |                 |                 v                         |
+        |                 |        +------------------+               |
+        |                 |        | W6 Review plan   |               |
+        |                 |        | (scores + reasons|               |
+        |                 |        +------------------+               |
+        |                 |                 |                         |
+        |                 |                 v                         |
+        |                 |        +------------------+   stale?      |
+        |                 |        | W7 Apply plan    |---refused---->+
+        |                 |        +------------------+   (regenerate)
+        |                 |                 |
+        |                 |                 v
+        |                 |        +------------------+    W8 Scenario
+        |                 |        | COMMITTED STATE  |<--- simulator
+        |                 |        | (tasks ASSIGNED, |     (A-D) mutates
+        |                 |        |  crews/aircraft  |      world, flags
+        |                 |        |  ASSIGNED, fuel/ |      tasks, returns
+        |                 |        |  stores consumed)|      to W5 for a
+        |                 |        +------------------+      revised plan)
+        |                 |                 |
+        +-----------------+-----------------+
+                          |
+                          v
+                 +-------------------+          +------------------+
+                 | W9 Activity Log   |  ....... | W10 Reset (demo) |
+                 | (audit trail)     |          +------------------+
+                 +-------------------+
+
+  Every write anywhere in this diagram ends in two things: a transactionally
+  consistent database state and one appended ActivityLog entry.
+
+
+--------------------------------------------------------------------------------
+3. W1 — SETUP / SEED WORKFLOW (npm run setup)
+--------------------------------------------------------------------------------
+
+  1. prisma generate            build the typed client from schema.prisma
+  2. prisma db push             create/dev.db (SQLite) from the schema
+  3. tsx prisma/seed.ts -> src/lib/seed.ts  (seedDemoData):
+       a. wipe all 8 tables
+       b. insert 4 regions (2 with standing restrictions), 12 aircraft,
+          18 crew, 8 support resources, 13 tasks (12 open + 1 completed)
+       c. write 7 historical activity entries telling the scenario story
+       d. RUN THE REAL ALLOCATION ENGINE over the seeded world
+       e. persist the outcome as the first plan, backdate it 2 hours,
+          mark it APPLIED  -> the demo starts with a plan in force
+  4. npm run dev -> six pages render against that state
+
+  Result: the operator opens the app to a consistent, already-planned world
+  with visible blockers (rotary maintenance gap, fuel/medical shortages,
+  restricted regions) ready to be demonstrated.
+
+
+--------------------------------------------------------------------------------
+4. W2 — MONITORING WORKFLOW (Overview page)
+--------------------------------------------------------------------------------
+
+  GET /api/dashboard -> orchestrator.getDashboard() computes, in one pass:
+
+    - readiness score  = 45% available airframes + 25% available crew
+                       + 20% unblocked open tasks + 10% average fleet
+                       readiness (banded READY >= 85, DEGRADED >= 65,
+                       CONSTRAINED below) — the published formula is shown
+                       next to the number
+    - counts           aircraft by status/category, crew by status, tasks by
+                       status, blocked tasks, needs-replanning count,
+                       active constraints, restricted regions, resources
+                       below minimum, utilisation percent
+    - charts           fleet status by category; task breakdown
+    - timeline         next 8 events: maintenance completions, weather review
+                       (+24h), airspace review (+12h), next 4 task windows
+    - last plan        id, generated/applied timestamps, status
+
+  The header on every page repeats the last plan's age/status, so the operator
+  can see at a glance whether the picture is fresh.
+  Monitoring is read-only; nothing in W2 changes state.
+
+
+--------------------------------------------------------------------------------
+5. W3 — FLEET & CREW WORKFLOW
+--------------------------------------------------------------------------------
+
+  5.1  Update an aircraft (PATCH /api/fleet/[id])
+       Operator edits status / readiness / turnaround / maintenance estimate.
+       Validation:
+         - AVAILABLE requires readiness >= 60%          (else 422)
+         - MAINTENANCE requires a future estimate       (else 422)
+         - a non-MAINTENANCE airframe cannot keep a future estimate (else 422)
+         - UNAVAILABLE caps readiness at 25
+       Then, in one transaction:
+         - save the airframe
+         - flagTasksForAircraft: if it is now unusable, find the tasks it is
+           committed to in the APPLIED plan; release each (resource ledger
+           updated), set task PENDING with note "Flagged for review: assigned
+           aircraft AC-XXX is now <status>"
+         - log AIRCRAFT_UPDATED (old -> new values, flagged count)
+         - return { aircraft, affectedTasks, dataVersion }
+       Operator sees which tasks fell back and can regenerate a plan.
+
+  5.2  Update a crew member (PATCH /api/crew/[id])
+       Same shape: consistency check on status vs "available from" (a future
+       available-from date is refused in either state), then
+       flagTasksForCrew -> release + PENDING + note, log CREW_UPDATED.
+
+  5.3  Update a support resource (PATCH /api/resources/[id])
+       Set availableQuantity / minimumRequired. Status recalculates
+       AVAILABLE or LOW (below minimum). Log RESOURCE_UPDATED.
+       Below-minimum resources are deferred by the engine at the next
+       generation (policy rule), and standing RESOURCE_BELOW_MINIMUM
+       violations are reported alongside the plan.
+
+  5.4  Read the fleet view
+       GET /api/fleet joins aircraft with their active assignments and
+       returns crew, resources, regions and the current assignment list.
+
+
+--------------------------------------------------------------------------------
+6. W4 — TASK MANAGEMENT WORKFLOW
+--------------------------------------------------------------------------------
+
+  Create (POST /api/tasks)
+    1. Zod validates every field: title, category, priority, required
+       aircraft category / crew qualification / resource category + quantity,
+       region, start & end (ISO), optional notes; end must be after start.
+    2. Orchestrator checks the region exists, allocates the next TASK-NNN id,
+       stores the task as PENDING.
+    3. Log TASK_CREATED. The task is now visible to the allocator.
+
+  Update (PATCH /api/tasks/[id])
+    - window ordering and region existence re-checked
+    - COMPLETED tasks can only reopen as PENDING or CANCELLED
+    - if the task leaves ASSIGNED: releaseTaskAssignment (resource quantity
+      returned, airframe/crew freed if nothing else needs them)
+    - status edits log TASK_STATUS_CHANGED, field edits log TASK_UPDATED
+
+  Delete (DELETE /api/tasks/[id])
+    release if ASSIGNED -> delete (allocations cascade) -> TASK_DELETED log.
+
+  Volumes view (/tasks) shows the backlog with priorities, windows, required
+  resources, current assignment (aircraft/crew/score) and constraint notes —
+  the notes are where every engine rejection reason is surfaced.
+
+
+--------------------------------------------------------------------------------
+7. W5 — PLAN GENERATION WORKFLOW
+--------------------------------------------------------------------------------
+
+  Trigger: operator clicks "Generate new plan" (or "Generate revised plan"
+  after a scenario) -> POST /api/plans/generate.
+
+  SEQUENCE
+
+   Operator        /plans page        /api/plans/generate      Orchestrator
+      |  click          |                    |                     |
+      |---------------->|  POST              |                     |
+      |                 |------------------->|  generateAllocationPlan()
+      |                 |                    |-------------------->|
+      |                 |                    |        1. load open tasks      |
+      |                 |                    |           (none? -> 422 "no   |
+      |                 |                    |           open tasks to plan") |
+      |                 |                    |        2. getDataVersion()     |
+      |                 |                    |        3. getPrebooked        |
+      |                 |                    |           Assignments()       |
+      |                 |                    |        4. allocate(...)  ---> engine (pure)
+      |                 |                    |                     |  <--- outcome
+      |                 |                    |        5. createPlan(version,|
+      |                 |                    |           outcome)  [1 tx]  |
+      |                 |                    |        6. logActivity(        |
+      |                 |                    |           PLAN_GENERATED)     |
+      |                 |                    |<--------------------         |
+      |                 |<-------------------|  200 { data: plan }          |
+      |  plan rendered  |                    |                              |
+
+  INTERNAL STEPS IN DETAIL
+
+    Inputs read in one pass (readOperationalDataSet): aircraft, crew,
+    resources, regions, all tasks.
+
+    Prebooked:  the APPLIED plan's ASSIGNED rows whose tasks are still
+                ASSIGNED -> their aircraft/crew windows and resource
+                quantities are reserved before the run (a replan can never
+                steal a live commitment).
+
+    Engine:     allocates remaining PENDING / RECOMMENDED / BLOCKED tasks in
+                priority order (CRITICAL -> LOW), earliest window first; every
+                assignment scored from the four published terms; every
+                rejection recorded with its reason (see section 11).
+
+    Persist:    one transaction writes
+                  - carried ASSIGNED rows (COMMITTED tasks the engine skipped)
+                  - fresh RECOMMENDED rows (score + breakdown + explanation)
+                  - BLOCKED / UNASSIGNED rows (reason text)
+                plus the plan row itself (status GENERATED, dataVersion
+                stamped, JSON summary).
+
+    Log:        PLAN_GENERATED with counts (recommendations, blocked,
+                unassigned) and the data version.
+
+  NOTES
+    - Generation is idempotent in content: same world -> same plan.
+    - Generating does NOT change operational state. Tasks/aircraft/crew/
+      resources change only at APPLY time (W7).
+    - Operations that change data between generate and apply make the plan
+      stale; W7 refuses it (guardrail).
+
+
+--------------------------------------------------------------------------------
+8. W6 — PLAN REVIEW WORKFLOW (what the operator inspects)
+--------------------------------------------------------------------------------
+
+  The plan view shows, per task:
+
+    RECOMMENDED   score (0-100), score breakdown (priority / readiness /
+                  time-window / efficiency), the chosen aircraft + crew +
+                  resource, and the generated sentence: why this triple is
+                  eligible and how the turnaround fits the window.
+    BLOCKED       the engineering reason, e.g.
+                    "all compatible ROTARY resources are currently under
+                     maintenance" or "weather over Coastal Sector is
+                     Restricted and standing policy suspends TRAINING tasks"
+    UNASSIGNED    "every compatible aircraft and crew is already committed to
+                  a higher priority task in this plan"
+    CARRIED       tasks already committed by the plan in force (not replanned)
+
+  Plus plan level:
+    - summary notes (counts, what was not served and why)
+    - utilisation: aircraft %, crew %, and per-resource consumed/remaining
+    - violations: standing findings (readiness below minimum, resource below
+      minimum, restricted regions, fleet gaps, qualification gaps) — these
+      are data-quality alerts, independent of this plan.
+
+  Decision options for the operator:
+    - APPLY the plan as is                          -> W7
+    - fix data first (readiness, crew, stock)       -> W3/W4, then re-generate
+    - leave it (plans are cheap; nothing consumed until applied)
+
+
+--------------------------------------------------------------------------------
+9. W7 — PLAN APPLY WORKFLOW
+--------------------------------------------------------------------------------
+
+  Trigger: operator clicks "Apply plan" (confirm dialog) ->
+  POST /api/plans/[id]/apply.
+
+  GUARD SEQUENCE (first failure stops, nothing changes)
+
+    1. plan exists?                       else 404
+    2. status APPLIED?                    else 409 "already applied"
+    3. status SUPERSEDED?                 else 409 "superseded by newer plan"
+    4. dataVersion == live fingerprint?   else 409 "stale: data changed after
+                                          generation" (both versions shown)
+    5. validatePlanAssignments(live data) — per-row re-check:
+         task exists / carried rows still ASSIGNED / tasks still plannable
+         aircraft: exists, status AVAILABLE|ASSIGNED, category match,
+                   readiness >= 60, no maintenance overlap, no double-book
+         crew:     exists, status, qualification match, no double-book
+         resource: exists, not UNAVAILABLE, >= minimum, cumulative quantity
+                   covered
+       any problems?                      else 409 with the full list
+
+  ATOMIC APPLY (single transaction)
+
+    a. every other APPLIED plan -> SUPERSEDED
+    b. for each RECOMMENDED row:
+         allocation -> ASSIGNED
+         task -> ASSIGNED (constraint notes cleared)
+         aircraft -> ASSIGNED, crew -> ASSIGNED
+         resource quantity -= task requirement (LOW if under minimum)
+    c. for each BLOCKED / UNASSIGNED row on a still-plannable task:
+         task -> BLOCKED (hard constraint) or PENDING (lost contention),
+         with the engine's explanation stored as the task's constraint note
+    d. plan -> APPLIED + appliedAt
+    e. ActivityLog PLAN_APPLIED with applied/blocked/pending counts
+
+  AFTER: the applied plan is "the plan in force". Its ASSIGNED rows are what
+  get prebooked into the next generation and released when tasks change.
+  Attempting to apply the same plan again is refused (409).
+
+
+--------------------------------------------------------------------------------
+10. W8 — SCENARIO SIMULATOR WORKFLOWS
+--------------------------------------------------------------------------------
+
+  Entry: /scenarios calls GET /api/scenarios for the current world state,
+  then POST /api/scenarios/[type]/activate with an optional target
+  (aircraftId / regionId / hours). Each scenario returns: initial conditions,
+  changes made, affected tasks (with notes) and the new dataVersion.
+
+  A. AIRCRAFT UNAVAILABLE                     (type: aircraft-unavailable)
+     1. choose airframe (given, else first ASSIGNED, else first AVAILABLE;
+        refuses an already-unavailable airframe)
+     2. transaction:
+          - aircraft -> UNAVAILABLE, readiness capped at 25%
+          - every non-closed task it is committed to (from the APPLIED plan):
+            releaseTaskAssignment -> task PENDING with
+            "Reassigned for review" note
+          - log SCENARIO_ACTIVATED "Scenario A ..."
+     3. operator generates a revised plan -> the affected tasks are
+        re-planned onto other airframes or reported with reasons.
+
+  B. WEATHER RESTRICTION                     (type: weather-restriction)
+     1. choose region (given, else busiest still-NORMAL region; refuses one
+        already restricted)
+     2. transaction:
+          - region.weatherStatus -> RESTRICTED
+          - open tasks there of blocked categories (TRAINING, TRANSPORT):
+            release if ASSIGNED -> BLOCKED with the policy reason
+          - log SCENARIO_ACTIVATED "Scenario B ..."
+     (EMERGENCY_SUPPLY / LOGISTICS / etc. in that region remain plannable.)
+
+  C. AIRSPACE RESTRICTION                    (type: airspace-restriction)
+     Same mechanics; blocked categories LOGISTICS and TRANSPORT
+     (EMERGENCY_SUPPLY is exempt — visible in the scenario description).
+
+  D. MAINTENANCE DELAY                       (type: maintenance-delay)
+     1. choose a MAINTENANCE airframe (given or first; refuses others)
+     2. new estimate = max(old estimate, now) + hours (default 12, max 72)
+     3. transaction:
+          - estimate updated; readiness -15 (floor 10)
+          - every non-closed task of that aircraft category starting before
+            the new estimate: release if ASSIGNED -> PENDING with a review
+            note naming the airframe and the new estimate
+          - log SCENARIO_ACTIVATED "Scenario D ..."
+     4. operator generates a revised plan.
+
+  REVISED PLAN (W5 again)
+     Same pipeline with the same prebooking rules. Because committed tasks
+     stay committed (carried) and only released tasks are replanned, the
+     resulting diff is small and reviewable: old assignment vs new assignment
+     per affected task. Apply it through W7 as usual.
+
+  RESET (demo hygiene)
+     POST /api/scenarios/reset -> seedDemoData() wipes and rebuilds the
+     deterministic world (including a fresh applied initial plan) and logs
+     DEMO_RESET. The demo returns to the state described in the README.
+
+
+--------------------------------------------------------------------------------
+11. ALLOCATION ENGINE — PER-TASK DECISION FLOW (the core workflow)
+--------------------------------------------------------------------------------
+
+  For each task, in priority order (CRITICAL, HIGH, MEDIUM, LOW;
+  earliest window; then id):
+
+      task status plannable (PENDING/RECOMMENDED/BLOCKED)?
+        | no  -> SKIPPED (assigned elsewhere / closed)
+        v yes
+      region known?
+        | no  -> BLOCKED "references an unknown operating region"
+        v yes
+      region weather/airspace allows this task category (policy)?
+        | no  -> BLOCKED <policy reason, same wording the simulator uses>
+        v yes
+      any airframe of the required category in the fleet?
+        | no  -> BLOCKED "no available resource matches the required category"
+        v yes
+      any of them usable now (status, >= 60% readiness,
+      turnaround/maintenance complete before window start)?
+        | no  -> BLOCKED <all-maintenance | deferred: turnaround | below min>
+        v yes
+      crew holding the required qualification on strength?
+        | no  -> BLOCKED "no crew holds the required qualification"
+        v yes
+      any of them usable now (AVAILABLE, available-from <= window start)?
+        | no  -> BLOCKED "all qualified crew are currently unavailable"
+        v yes
+      resource category stocked?
+        | no  -> BLOCKED "no support resource of category ... is stocked"
+        v yes
+      any resource usable (not UNAVAILABLE, remaining >= required quantity,
+      and above its configured minimum)?
+        | no  -> BLOCKED <below minimum | holdings too small | capacity used>
+        v yes
+      at least one candidate aircraft and crew free in the window
+      (no booking overlap)?
+        | no  -> UNASSIGNED "every compatible resource is already committed
+                 to a higher priority task in this plan"
+        v yes
+      SCORE every (aircraft, crew, resource) combination; keep the best
+      (ties broken by lowest ids — deterministic)
+        |
+      commit to the run's ledger: aircraft interval, crew interval,
+      resource quantity decrement  -> RECOMMENDED
+
+  Booking ledger lives only inside the run; it becomes durable state at
+  APPLY time. Prebooked entries from the plan in force are loaded into the
+  same ledger BEFORE task processing.
+
+
+--------------------------------------------------------------------------------
+12. STATE MACHINES
+--------------------------------------------------------------------------------
+
+  TASK
+      PENDING --generate--> RECOMMENDED --apply--> ASSIGNED --complete-->
+        COMPLETED
+      PENDING/RECOMMENDED/ASSIGNED --scenario or data change--> PENDING
+        (with review note)  or  BLOCKED (policy/constraint)
+      ASSIGNED --edit/delete/release--> PENDING or deleted
+      COMPLETED --reopen--> PENDING (or CANCELLED)
+      any --cancel--> CANCELLED (terminal)
+      CLOSED = COMPLETED | CANCELLED (never replanned again)
+
+  PLAN
+      GENERATED --apply--> APPLIED --newer plan applied--> SUPERSEDED
+      GENERATED --data changed--> stale: apply refused, must regenerate
+      (no path back from APPLIED or SUPERSEDED)
+
+  ALLOCATION ROW
+      RECOMMENDED --apply--> ASSIGNED --task leaves assigned--> RELEASED
+      BLOCKED / UNASSIGNED are terminal for their plan (informational)
+
+  AIRCRAFT
+      AVAILABLE <-> ASSIGNED   (via apply / release)
+      AVAILABLE/ASSIGNED --set--> MAINTENANCE (requires future estimate)
+      MAINTENANCE --estimate passes--> Available when set back by operator
+      any --set--> UNAVAILABLE (readiness capped 25; blocks allocation)
+      Rule: below 60% readiness can never be AVAILABLE.
+
+  CREW
+      AVAILABLE <-> ASSIGNED ; any --> UNAVAILABLE (blocks allocation)
+      "available from" timestamp restricts allocation windows.
+
+  SUPPORT RESOURCE
+      AVAILABLE <-> LOW (auto, by availableQuantity vs minimumRequired)
+      UNAVAILABLE blocks all dependent tasks.
+      Quantity decremented on apply, restored on release; never negative.
+
+
+--------------------------------------------------------------------------------
+13. EVENT / AUDIT CATALOGUE (ActivityLog)
+--------------------------------------------------------------------------------
+
+  OPERATIONAL EDITS
+    AIRCRAFT_UPDATED        status/readiness/turnaround change (+ flagged count)
+    CREW_UPDATED            status/qualification change (+ flagged count)
+    RESOURCE_UPDATED        inventory and minimum change
+    TASK_CREATED            TASK-NNN created with priority/category/region
+    TASK_UPDATED            field edit
+    TASK_STATUS_CHANGED     status transition
+    TASK_DELETED            removal (after release, if needed)
+
+  PLANNING
+    PLAN_GENERATED          version + recommendations/blocked/unassigned
+    PLAN_APPLIED            applied/blocked/pending counts
+
+  SIMULATION
+    SCENARIO_ACTIVATED      scenario A/B/C/D with target and affected count
+    DEMO_RESET              deterministic reseed
+
+  SEED NARRATIVES (written once at seed time)
+    SCENARIO_LOADED, MAINTENANCE_OPENED, WEATHER_ADVISORY, TASK_CREATED,
+    AIRSPACE_NOTICE, RESOURCE_LOW, TASK_COMPLETED
+
+  Every entry: eventType, human-readable description (old -> new values
+  where relevant), entityType/entityId, timestamp. Append-only; the Activity
+  page filters by these types. This is the full reconstruction trail: seed ->
+  edits -> scenarios -> plans -> reset.
+
+
+--------------------------------------------------------------------------------
+14. FAILURE MODES AND OPERATOR REMEDIES
+--------------------------------------------------------------------------------
+
+  No open tasks to plan                 -> create/open a task (W4)
+  Plan stale (409)                      -> regenerate (W5); the world moved
+                                           after generation
+  Plan no longer matches data (409)     -> regenerate; the problem list is
+                                           shown per row
+  Plan already applied / superseded     -> generate a new plan; old plans are
+                                           history, not state
+  Nothing assignable for a task         -> read its status/note:
+      BLOCKED:  fix the named constraint (readiness, crew, stock, policy)
+      UNASSIGNED: raise priority, widen the window, or free a resource
+  Below-minimum inventory               -> restock (W3) before regenerating
+  Aircraft/crew edit invalid (422)      -> the message states the exact rule
+                                           (e.g. readiness < 60 cannot be
+                                           Available)
+  Scenario refused (422)                -> target already in that state, or
+                                           no eligible target exists
+  Unexpected error (500)                -> logged server-side; demo data can
+                                           always be restored with
+                                           "Reset demo data"
+
+
+--------------------------------------------------------------------------------
+15. DEMO SCRIPT (2 MINUTES — the intended walkthrough)
+--------------------------------------------------------------------------------
+
+  1. npm run setup ; npm run dev ; open http://localhost:3000
+  2. Overview: readiness score, bands, charts, upcoming events, last plan.
+  3. Plans -> "Generate new plan": read score breakdowns, blocked reasons,
+     utilisation; click "Apply plan".
+  4. Scenario Simulator -> "A · Aircraft unavailable": the affected tasks are
+     flagged back to Pending with notes.
+  5. "Generate revised plan": the diff shows old vs new assignments; apply it.
+  6. Activity Log: the whole story; then "Reset demo data" to restore the
+     seed for the next run.
+
+
+--------------------------------------------------------------------------------
+16. TEST WORKFLOW (developer loop)
+--------------------------------------------------------------------------------
+
+  npm test (vitest run):
+    - allocation suite: pure engine rules on in-memory fixtures (no DB)
+    - service suite:     orchestrator flows against the demo SQLite file,
+                         re-seeded at test time
+                        (stale-plan rejection, apply consistency, scenario ->
+                         fresh recommendations, aircraft-unavailable replan,
+                         reset restores the initial state)
+  After running tests, execute npm run db:reset to restore the clean demo
+  dataset (the service tests re-seed the live file).
+
+  Change loop: edit engine -> run allocation suite; edit orchestration ->
+  run service suite; then npm run build + npm run lint before demoing.
+
+================================================================================
+END OF DOCUMENT
+================================================================================

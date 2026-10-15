@@ -1,0 +1,748 @@
+================================================================================
+AIR POWER — SYSTEM ARCHITECTURE
+Decision-support dashboard for simulated air-force support operations
+Smart India Hackathon (SIH) solution — MoD problem statement ID 26250
+================================================================================
+
+Document : System Architecture
+Version  : 1.0
+Date     : 2026-10-15
+Status   : Working prototype (simulation environment — all data is synthetic)
+
+
+--------------------------------------------------------------------------------
+1. PROBLEM CONTEXT AND SOLUTION SUMMARY
+--------------------------------------------------------------------------------
+
+Air-force support operations have to answer one question every day:
+
+    "Given aircraft readiness, crew availability, support inventories,
+     weather/airspace restrictions and task priorities — who flies what,
+     and why?"
+
+Answering it by hand is slow, inconsistent and hard to justify. The failure
+modes are concrete: double-booked airframes, tasks left unassigned with no
+stated reason, stale plans applied against data that has since changed, and a
+decision trail nobody can reconstruct.
+
+AIR POWER is a decision-support dashboard that:
+
+  * tracks fleet readiness, crew status, support resources, simulated regions
+    and operational tasks with priorities and time windows;
+  * converts the whole picture into a deterministic, explainable allocation
+    plan — every recommendation carries a score (0-100) built from four
+    published terms and a plain-English explanation;
+  * simulates what-if events (aircraft unavailable, weather, airspace,
+    maintenance delay) and produces revised plans;
+  * refuses to apply a plan generated against stale data;
+  * keeps an audit trail of every change (activity log).
+
+The system is a recommendation engine, not an autopilot: the operator always
+reviews and explicitly applies a plan. Nothing here connects to a real system;
+every aircraft, crew member, task, region and quantity is synthetic demo data.
+
+Core design decisions:
+
+  1. The allocation engine (src/lib/allocation.ts) is a PURE function — no
+     database, no clock of its own (the current time is injected), no
+     randomness. Same inputs => same plan, always.
+  2. Exactly one orchestrator (src/services/operations-orchestrator.ts) owns
+     every read and write path. The UI and the API never talk to the database
+     directly for business operations.
+  3. Every recommendation is explainable: score breakdown + human-readable
+     reason. Rejections are never silent — blocked and unassigned tasks each
+     carry the constraint that stopped them.
+  4. Safety over convenience: stale-plan rejection, prebooking of committed
+     assignments, transactional apply, and an explicit release ledger for
+     resources when tasks leave the assigned state.
+
+
+--------------------------------------------------------------------------------
+2. DESIGN PRINCIPLES
+--------------------------------------------------------------------------------
+
+  Determinism        Pure engine + injected clock => identical inputs yield
+                     identical plans. This is what makes results testable and
+                     trustworthy in a review meeting.
+
+  Explainability     Four transparent score terms (priority, readiness,
+                     time-window fit, efficiency) and a generated sentence per
+                     assignment and per rejection.
+
+  Single writer      Only the orchestrator + plan store mutate operational
+                     state. Route handlers are thin adapters.
+
+  Guardrails first   Stale plans are refused, committed bookings are reserved,
+                     policy thresholds live in one file (src/lib/policy.ts),
+                     and applying a plan is a single database transaction.
+
+  Simulation-safe    The entire dataset is synthetic; the UI carries a standing
+                     "simulation environment" notice. No real-world feeds.
+
+  Test localisation  Engine rules are unit-tested without a database; service
+                     flows are integration-tested against the same SQLite file
+                     the demo uses.
+
+
+--------------------------------------------------------------------------------
+3. HIGH-LEVEL ARCHITECTURE
+--------------------------------------------------------------------------------
+
++------------------------------------------------------------------------------+
+|  OPERATOR (browser)                                                          |
++------------------------------------------------------------------------------+
+        ^  rendered pages / toasts / dialogs        |  fetch() JSON
+        |                                            v
++------------------------------------------------------------------------------+
+|  PRESENTATION LAYER — Next.js App Router client pages (React 19)             |
+|                                                                              |
+|    /            Operational Overview      (dashboard metrics + charts)       |
+|    /fleet       Fleet & Crew              (readiness, crew, resources)       |
+|    /tasks       Tasks                     (CRUD + priority + windows)        |
+|    /plans       Allocation Plans          (generate -> review -> apply)      |
+|    /scenarios   Scenario Simulator        (what-if events + revised plan)    |
+|    /activity    Activity Log              (audit trail)                      |
+|                                                                              |
+|    src/components/shell.tsx   App shell: side nav, header, sim notice        |
+|    src/components/ui.tsx      Hand-drawn UI kit: cards, tables, dialogs,     |
+|                               toasts, status pills, progress bars            |
+|    src/lib/client.ts          useApi()/apiRequest()/notifyChanged() — the    |
+|                               thin fetch wrapper + cross-view refetch event  |
++------------------------------------------------------------------------------+
+        |  JSON: { data } on success, { error: { message, details } } on fail
+        v
++------------------------------------------------------------------------------+
+|  API LAYER — Next.js route handlers, one folder per resource                 |
+|  (src/app/api/**/route.ts). All routes: runtime=nodejs, force-dynamic.       |
+|                                                                              |
+|  Thin by contract: parse request -> validate (Zod) -> call orchestrator ->   |
+|  wrap response. No business logic lives here.                                |
+|                                                                              |
+|  src/lib/api.ts      ok() / fail() / handle() / parseBody()                  |
+|                      handle() maps errors to HTTP: ServiceError.status,      |
+|                      ZodError -> 422 field errors, anything else -> 500.     |
+|  src/lib/validation.ts  Zod schemas for every request body                  |
++------------------------------------------------------------------------------+
+        |
+        v
++------------------------------------------------------------------------------+
+|  SERVICE LAYER — Operations Orchestrator                                     |
+|  (src/services/operations-orchestrator.ts)                                   |
+|                                                                              |
+|  THE single place where data is read, constraints are validated, the engine  |
+|  runs and results become plans / scenario changes / activity records.        |
+|                                                                              |
+|  Reads:  getDashboard, getFleetOverview, getTaskList, getRegionList,         |
+|          getActivityLog, getPlanList, getPlan                               |
+|  Writes: updateAircraft, updateCrew, updateResource, createTask, updateTask, |
+|          deleteTask, generateAllocationPlan, applyAllocationPlan,            |
+|          activateScenario (4 types), resetDemoData                          |
++------------------------------------------------------------------------------+
+        |
+        +----------------------------+-------------------------------+
+        v                            v                               v
++----------------------+   +----------------------+   +--------------------------+
+| DOMAIN + ENGINE      |   | PLAN STORE           |   | POLICY                   |
+| src/lib/allocation.ts|   | src/lib/plans.ts     |   | src/lib/policy.ts        |
+|                      |   |                      |   |                          |
+| Pure allocation      |   | Persist a generated  |   | All thresholds in one     |
+| engine (greedy,      |   | plan, re-validate it |   | auditable file:          |
+| priority-ordered,    |   | against live data,   |   |  - min readiness 60%     |
+| no clock, no I/O,    |   | apply it atomically. |   |  - weather blocks        |
+| no randomness)       |   | Carried commitments, |   |    TRAINING, TRANSPORT   |
+|                      |   | prebookings,         |   |  - airspace blocks       |
+| src/lib/domain.ts    |   | stale-plan /         |   |    LOGISTICS, TRANSPORT  |
+| vocabularies,        |   | constraint checks.   |   |  - resource deferral on  |
+| priority weights     |   |                      |   |  - maintenance delay 12h |
++----------------------+   +----------------------+   +--------------------------+
+        |                            |
+        v                            v
++------------------------------------------------------------------------------+
+|  DATA-ACCESS LAYER — src/lib/repository.ts                                   |
+|                                                                              |
+|  All storage reads/writes for the service layer. Also:                       |
+|    * getDataVersion()        sha1 fingerprint of the whole dataset           |
+|    * readOperationalDataSet() everything the engine needs, read once         |
+|    * releaseTaskAssignment() the resource-release ledger (see section 9)     |
+|    * logActivity()           audit trail writer                              |
+|    * nextTaskId()            TASK-NNN sequence                               |
++------------------------------------------------------------------------------+
+        |
+        v
++------------------------------------------------------------------------------+
+|  PERSISTENCE — Prisma ORM 6 over SQLite (prisma/dev.db, via DATABASE_URL)    |
+|  Models: Aircraft, Crew, SupportResource, SimulatedRegion, OperationalTask,  |
+|          AllocationPlan, Allocation, ActivityLog                             |
++------------------------------------------------------------------------------+
+
+
+--------------------------------------------------------------------------------
+4. TECHNOLOGY STACK
+--------------------------------------------------------------------------------
+
+  Runtime/UI         Next.js 16 (App Router, Turbopack) + React 19 +
+                     TypeScript 5
+  Styling            Tailwind CSS v4 with a custom hand-drawn "paper" theme
+                     (sketch borders, ink palette, Caveat/Inter fonts)
+  Charts/icons       Recharts (dashboard charts), lucide-react (icons)
+  Validation         Zod schemas at every API boundary
+  Persistence        Prisma ORM 6, SQLite file database (zero-install demo)
+  Testing            Vitest 5 — pure engine tests + service integration tests
+  Scripting          tsx for the seed script
+  Node               Node 20+
+
+  Why SQLite: the demo must run on a laptop with zero infrastructure. The
+  repository layer keeps all storage calls in one file, so swapping to
+  PostgreSQL for production is a configuration + schema change, not a rewrite.
+
+
+--------------------------------------------------------------------------------
+5. DATA MODEL
+--------------------------------------------------------------------------------
+
+  Aircraft (AC-NNN)                 Crew (CREW-NNN)
+  ------------------------          ---------------------------
+  id, name, category                id, displayName,
+  status (AVAILABLE | ASSIGNED |    qualificationCategory
+    MAINTENANCE | UNAVAILABLE)        (PILOT_*, LOADMASTER, MAINTENANCE_TECH)
+  readinessPercentage 0..100        status (AVAILABLE | ASSIGNED | UNAVAILABLE)
+  turnaroundMinutes                 availableFrom (nullable)
+  maintenanceCompletionAt (nullable)
+        |                                |
+        |  allocated via                 |  allocated via
+        v                                v
+  +---------------------------------------------------------------+
+  | Allocation  (one row per task per plan)                        |
+  |   planId, taskId, aircraftId?, crewId?, resourceId?            |
+  |   status: RECOMMENDED | ASSIGNED | BLOCKED | UNASSIGNED |      |
+  |           RELEASED                                             |
+  |   score (0..100), explanation (text), breakdown (JSON)         |
+  +---------------------------------------------------------------+
+        ^                    ^
+        |                    |
+  AllocationPlan        OperationalTask (TASK-NNN)
+  --------------        ------------------------------------------
+  id (cuid)             id, title, category, priority
+  status: GENERATED |   (CRITICAL | HIGH | MEDIUM | LOW)
+    APPLIED |           requiredAircraftCategory
+    SUPERSEDED          requiredCrewQualification
+  generatedAt           requiredResourceCategory
+  appliedAt             requiredResourceQuantity
+  dataVersion  <-----   simulatedRegionId --> SimulatedRegion (REG-NN)
+  summary (JSON)          weatherStatus: NORMAL | RESTRICTED
+                          airspaceStatus: OPEN | RESTRICTED
+                        startsAt, endsAt
+                        status: PENDING | RECOMMENDED | ASSIGNED |
+                                BLOCKED | COMPLETED | CANCELLED
+                        constraintNotes (the latest reason shown to the user)
+
+  SupportResource (RES-NN)          ActivityLog
+  ------------------------          ---------------------------
+  id, name, category (FUEL,         id, eventType, description,
+    MAINTENANCE_CAPACITY,           entityType, entityId, createdAt
+    GROUND_SUPPORT, SPARE_PARTS,
+    MEDICAL_SUPPLY)                 Append-only audit trail.
+  availableQuantity                 Indexed by createdAt + eventType.
+  minimumRequired
+  status: AVAILABLE | LOW | UNAVAILABLE
+
+  Notes
+    * SQLite has no native enums, so statuses/categories are plain strings.
+      The single source of truth for their allowed values is
+      src/lib/domain.ts; Zod schemas in src/lib/validation.ts enforce them at
+      the API boundary.
+    * SimulatedRegion models the operating theatre: 4 regions, each able to be
+      weather-restricted and/or airspace-restricted independently.
+    * Data-version fingerprint: getDataVersion() hashes
+      "count:max(updatedAt)" for Aircraft, Crew, SupportResource,
+      SimulatedRegion and OperationalTask (sha1, first 12 chars). Any write to
+      any of those tables changes the fingerprint; it is stamped onto every
+      generated plan and checked again before applying it.
+
+
+--------------------------------------------------------------------------------
+6. ALLOCATION ENGINE — INTERNALS (src/lib/allocation.ts)
+--------------------------------------------------------------------------------
+
+  Input:  now (injected), aircraft, crew, resources, regions, tasks,
+          minReadiness (default from policy), prebooked (committed bookings
+          from the plan in force).
+
+  Nature: greedy, priority-ordered. Tasks are processed CRITICAL -> HIGH ->
+          MEDIUM -> LOW, ties broken by earliest window, then by task id
+          (deterministic). Each task is served by the best-scoring triple that
+          satisfies every hard constraint, then those resources are booked so
+          later tasks cannot double-book them.
+
+  The algorithm is deliberately NOT claimed to be globally optimal. A greedy
+  pass can let a lower-priority task lose resources it could have used well.
+  That trade-off is visible: losing tasks are reported with the reason.
+
+  PER-TASK PIPELINE (first failure wins; each has a precise message):
+
+    Step 0  Task status PENDING / RECOMMENDED / BLOCKED?      -> else SKIPPED
+            (ASSIGNED tasks are committed elsewhere; COMPLETED/CANCELLED
+             are closed.)
+    Step 1  Region exists?                                    -> else BLOCKED
+    Step 2  Region policy: weather/airspace restriction blocks this task
+            category (src/lib/policy.ts)?                     -> else BLOCKED
+    Step 3  Any aircraft of the required category at all?     -> else BLOCKED
+    Step 4  Usable aircraft now?
+              status AVAILABLE or ASSIGNED (ASSIGNED = committed, reusable)
+              readiness >= 60%
+              readyAt(now) <= task.startsAt, where
+              readyAt = max(now + turnaroundMinutes,
+                            maintenanceCompletionAt)
+                                                            -> else BLOCKED
+              (reason text distinguishes: all under maintenance / turnaround
+               cannot meet the window / below readiness minimum)
+    Step 5  Crew with the required qualification on strength? -> else BLOCKED
+            Crew usable now: status AVAILABLE and
+            availableFrom <= task.startsAt                   -> else BLOCKED
+    Step 6  Support resource category stocked?                -> else BLOCKED
+            Resource usable: not UNAVAILABLE, remaining >= required qty,
+            and (policy) availableQuantity >= minimumRequired -> else BLOCKED
+    Step 7  Best candidates free in the task window (no booking overlap)?
+                                                            -> else UNASSIGNED
+    Step 8  Score every surviving (aircraft, crew, resource) combination;
+            keep the best (ties: lowest ids — deterministic).
+
+  SCORING (weights sum to 1; result scaled to 0..100, one decimal):
+
+    score = 0.40 * priority          PRIORITY_WEIGHT: CRITICAL 1.0,
+                                   + 0.20 * readiness            HIGH 0.75,
+                                   + 0.20 * timeWindow           MEDIUM 0.5,
+                                   + 0.20 * efficiency           LOW 0.25
+      readiness  = readinessPercentage / 100
+      timeWindow = clamp01(1 - turnaroundMinutes / 240)
+                   (>= 240 min turnaround scores 0 on this term)
+      efficiency = clamp01( (resourceFit + airframeSpread) / 2 )
+                   resourceFit     = clamp01(required qty / remaining stock)
+                                     (tight fit scores higher)
+                   airframeSpread  = 1 / (1 + times this airframe is already
+                                     booked in this run)
+                                     (spreads work across the fleet)
+
+  TASK OUTCOMES
+    assignments : RECOMMENDED rows with score + breakdown + explanation
+    blocked     : hard constraint failed (maintenance, qualification, policy,
+                  category gap, support shortage) — cannot be planned at all
+    unassigned  : constraints were satisfiable in principle, but compatible
+                  aircraft/crew were already committed by higher-priority
+                  tasks in this run
+    skipped     : ASSIGNED (carried, see below) or closed tasks
+    utilisation : aircraft/crew percentages + per-resource
+                  consumed/remaining after the run
+    violations  : standing data-quality/invariant findings, independent of
+                  this plan's outcome:
+                    READINESS_BELOW_MINIMUM, RESOURCE_BELOW_MINIMUM,
+                    WEATHER_RESTRICTION, AIRSPACE_RESTRICTION,
+                    FLEET_GAP, QUALIFICATION_GAP
+
+  PREBOOKING AND CARRY-OVER
+    * Prebooking: before a fresh run, the orchestrator loads the APPLIED
+      plan's ASSIGNED rows (getPrebookedAssignments) and reserves those
+      aircraft/crew time intervals and resource quantities up front. A replan
+      therefore cannot silently steal a commitment that is still in force.
+    * Carry-over: tasks that were already ASSIGNED are skipped by the engine
+      but mirrored into the new plan as ASSIGNED rows ("carried over"), so the
+      applied plan always lists every committed task. Summary counts them as
+      "carried".
+
+
+--------------------------------------------------------------------------------
+7. PLAN STORE (src/lib/plans.ts)
+--------------------------------------------------------------------------------
+
+  Persist:
+    createPlan(dataVersion, outcome)
+      One transaction: insert AllocationPlan(status=GENERATED, dataVersion,
+      summary JSON) + all Allocation rows (carried ASSIGNED, fresh
+      RECOMMENDED, and every BLOCKED/UNASSIGNED rejection with its reason).
+
+  Validate before apply:
+    validatePlanAssignments(allocations, liveData)
+      Re-checks every row against live data at apply time:
+        - task still exists; carried rows must still be ASSIGNED
+        - RECOMMENDED tasks must still be plannable
+        - aircraft: exists, status, category match, readiness >= 60%,
+          maintenance done before window, no double-booking
+        - crew: exists, status, qualification match, no double-booking
+        - resource: exists, not UNAVAILABLE, >= minimum (policy),
+          cumulative consumption <= availableQuantity
+      Returns human-readable problems; non-empty => plan refused.
+
+  Apply:
+    applyPlan(planId) — guard sequence:
+      404 plan not found
+      409 plan already APPLIED
+      409 plan SUPERSEDED
+      409 dataVersion mismatch (stale) — details include both versions
+      409 validation problems (list)
+    Then one transaction:
+      - all other APPLIED plans -> SUPERSEDED
+      - each RECOMMENDED row  -> ASSIGNED; task -> ASSIGNED (notes cleared);
+        aircraft/crew -> ASSIGNED; resource quantity decremented
+        (LOW status if it drops under minimum)
+      - BLOCKED/UNASSIGNED rows on plannable tasks: task -> BLOCKED or
+        PENDING with the engine's explanation stored as constraintNotes
+      - plan -> APPLIED + appliedAt
+      - ActivityLog PLAN_APPLIED with counts
+
+  Query:
+    listPlans (last 25, with allocations + joined entities),
+    getPlanById, getLatestAppliedPlan, getActiveAssignments,
+    assignmentFingerprint (task -> "aircraft/crew" map for UI diffing).
+
+
+--------------------------------------------------------------------------------
+8. ORCHESTRATOR — WRITE-PATH BEHAVIOUR (src/services/operations-orchestrator.ts)
+--------------------------------------------------------------------------------
+
+  Every write follows the same shape:
+      load current state -> validate -> mutate + side effects in ONE prisma
+      transaction -> append ActivityLog -> return result + fresh dataVersion.
+
+  updateAircraft(id, patch)
+    Rules: cannot set AVAILABLE below 60% readiness;
+           MAINTENANCE requires a future maintenance completion estimate;
+           a non-MAINTENANCE airframe cannot keep a future estimate;
+           UNAVAILABLE caps reported readiness at 25%.
+    Side effect: flagTasksForAircraft — if the airframe became unusable, its
+    tasks in the APPLIED plan are released and returned to PENDING with a
+    review note ("Flagged for review: assigned aircraft AC-X is now ...").
+
+  updateCrew(id, patch)
+    Rules: availability status and "available from" must be consistent
+    (a future available-from date is refused in either state).
+    Side effect: flagTasksForCrew — same release-to-PENDING flow.
+
+  updateResource(id, patch)
+    Sets availableQuantity / minimumRequired; status recalculated to
+    AVAILABLE or LOW by comparison. (No release logic; resources are only
+    consumed/released through plan apply / releaseTaskAssignment.)
+
+  createTask(input)
+    Validates the region exists; assigns the next TASK-NNN id; status PENDING.
+    Full field set comes from Zod (title, category, priority, required
+    aircraft category, crew qualification, resource category + quantity,
+    region, window, optional notes).
+
+  updateTask(id, input)
+    Window end must be after start; region must exist; a COMPLETED task can
+    only be reopened as PENDING or CANCELLED; leaving ASSIGNED triggers
+    releaseTaskAssignment. Logs TASK_STATUS_CHANGED or TASK_UPDATED.
+
+  deleteTask(id)
+    Releases if ASSIGNED, then deletes (allocations cascade).
+
+  generateAllocationPlan()
+    Refuses when there are no open tasks (422). Reads the dataset, stamps the
+    current dataVersion, loads prebookings, runs the engine, persists the plan,
+    logs PLAN_GENERATED.
+
+  applyAllocationPlan(id)
+    Delegates to the plan store's applyPlan (section 7).
+
+  activateScenario(type, input)
+    See section 9. Each scenario returns: initial conditions, the changes
+    made, affected tasks with their notes, and the new dataVersion.
+
+  resetDemoData()
+    Re-runs the deterministic seed (fresh initial plan produced by the real
+    engine) and logs DEMO_RESET.
+
+
+--------------------------------------------------------------------------------
+9. SCENARIO SIMULATOR
+--------------------------------------------------------------------------------
+
+  Four what-if events; each mutates the simulated world inside one transaction
+  and logs SCENARIO_ACTIVATED. Target selection: caller may pass aircraftId /
+  regionId / hours; otherwise a sensible default is chosen.
+
+  A. aircraft-unavailable
+     Pick aircraft (or default: first ASSIGNED, else first AVAILABLE — refuses
+     if already UNAVAILABLE). Sets UNAVAILABLE + readiness capped at 25% and
+     releases every non-closed task it was committed to in the plan in force:
+     task -> PENDING with "Reassigned for review" note.
+
+  B. weather-restriction
+     Pick region (default: busiest region still NORMAL). Sets weatherStatus =
+     RESTRICTED. Open tasks of blocked categories (TRAINING, TRANSPORT) there
+     are released and set BLOCKED with the policy reason.
+
+  C. airspace-restriction
+     Same mechanics for airspaceStatus = RESTRICTED; blocked categories are
+     LOGISTICS and TRANSPORT (emergency supply is exempt).
+
+  D. maintenance-delay
+     Pick an aircraft under maintenance (default: first one). New estimate =
+     max(old estimate, now) + hours (default 12, 1..72 via validation).
+     Readiness drops by 15 points (floor 10). Tasks of that category starting
+     before the new estimate are released to PENDING with a flag-for-review
+     note.
+
+  Weather/airspace rules are shared verbatim between the simulator and the
+  engine via src/lib/policy.ts (isWeatherBlocked / isAirspaceBlocked /
+  regionBlockReason), so the wording and the rule can never diverge.
+
+  After any scenario the operator generates a REVISED PLAN: same pipeline,
+  with the committed remainder prebooked, producing a diff against the applied
+  plan (carried vs changed assignments).
+
+
+--------------------------------------------------------------------------------
+10. CONSISTENCY, GUARDRAILS AND INVARIANTS
+--------------------------------------------------------------------------------
+
+  (1) Stale-plan rejection
+      Plan carries dataVersion at generation time; apply compares against the
+      live fingerprint. Mismatch => 409 "This plan is stale... Generate a
+      fresh plan" (both versions in error details).
+
+  (2) Double-apply / supersede protection
+      A plan can be applied once; applying a new plan supersedes the previous
+      APPLIED plan in the same transaction.
+
+  (3) Prebooking
+      Committed bookings are reserved before every fresh run (section 6), so
+      replanning cannot silently steal an airframe or crew that is still
+      flying.
+
+  (4) Resource ledger
+      Support quantities are decremented on apply and returned by
+      releaseTaskAssignment whenever a task leaves ASSIGNED (manual edit,
+      delete, scenario, or a fleet/crew change that invalidates it).
+      Aircraft/crew flip back to AVAILABLE only if no other ASSIGNED row in
+      the applied plan still needs them. Re-checked by validatePlanAssignments
+      before apply.
+
+  (5) Policy gates
+      Readiness minimum 60%, weather/airspace category suspensions, resource
+      deferral below configured minimum — all in src/lib/policy.ts. The fleet
+      editor additionally refuses to mark a <60% airframe AVAILABLE.
+
+  (6) Transactionality
+      Every multi-row mutation runs in prisma.$transaction: plan apply,
+      plan create, scenario activation, task edits, aircraft/crew/resource
+      edits. Partial state is not observable.
+
+  (7) Audit trail
+      Append-only ActivityLog for every business event (see WORKFLOW.txt
+      section 10 for the event catalogue).
+
+
+--------------------------------------------------------------------------------
+11. API SURFACE (all routes runtime=nodejs, force-dynamic)
+--------------------------------------------------------------------------------
+
+  GET    /api/dashboard                    dashboard metrics/charts/timeline
+  GET    /api/fleet                        aircraft + crew + resources +
+                                           regions + active assignments
+  PATCH  /api/fleet/[id]                   update one aircraft
+  GET    /api/crew                         crew list
+  PATCH  /api/crew/[id]                    update one crew member
+  PATCH  /api/resources/[id]               update one support resource
+  GET    /api/regions                      simulated regions with statuses
+  GET    /api/tasks                        tasks joined with region +
+                                           current assignment
+  POST   /api/tasks                        create task
+  PATCH  /api/tasks/[id]                   update task
+  DELETE /api/tasks/[id]                   delete task
+  GET    /api/plans                        last 25 plans with allocations
+  GET    /api/plans/[id]                   one plan with allocations
+  POST   /api/plans/generate               run the engine, persist a plan
+  POST   /api/plans/[id]/apply             validate + apply a plan
+  GET    /api/scenarios                    initial conditions of the world
+  POST   /api/scenarios/[type]/activate    run one scenario
+                                           (aircraft-unavailable |
+                                            weather-restriction |
+                                            airspace-restriction |
+                                            maintenance-delay)
+  POST   /api/scenarios/reset              wipe + re-seed the demo data
+  GET    /api/activity                     audit trail (limit 1..200)
+
+  Response contract
+    success 200/201 : { "data": ... }
+    failure         : { "error": { "message": "...", "details": ... } }
+    statuses        : 400 bad request/JSON, 404 not found, 409 conflict
+                      (stale / already applied / superseded), 422 validation,
+                      500 unexpected.
+
+
+--------------------------------------------------------------------------------
+12. UI ARCHITECTURE AND DESIGN LANGUAGE
+--------------------------------------------------------------------------------
+
+  * All six pages are client components that read through useApi(path) and
+    mutate through apiPost/apiPatch/apiDelete. After any successful mutation
+    the page calls notifyChanged(), which broadcasts an
+    "airpower:changed" window event; every mounted useApi() refetches — cheap
+    cross-module consistency without a client cache layer.
+  * Feedback is first-class: toasts (ToastProvider), confirm dialogs for
+    destructive actions (apply plan, reset), explicit loading / error / empty
+    states, and status pills driven by the same vocabulary as the domain.
+  * Design language: "hand-drawn on paper" — irregular sketch borders, ink
+    palette (ink / paper / navy / accent), Caveat handwriting accents, dashed
+    simulation-environment notice. Deliberately styled to read as a
+    decision-support artifact, not a control console.
+  * The shell shows the last generated plan's timestamp and status on every
+    page, so plan state is never hidden from the operator.
+
+
+--------------------------------------------------------------------------------
+13. SEED DATA DESIGN (src/lib/seed.ts)
+--------------------------------------------------------------------------------
+
+  The seed is fully deterministic (fixed ids, fixed hour offsets from "now")
+  and covers every required demonstration case:
+
+    12 aircraft  — 5 TRANSPORT (1 maintenance, 1 unavailable),
+                   3 ROTARY (all under maintenance — temporary rotary gap),
+                   2 SURVEILLANCE (1 unavailable),
+                   2 TRAINER
+    18 crew      — pilots per category, loadmasters, maintenance techs, with
+                   deliberate unavailability
+    8 support resources — including two deliberately below their configured
+                   minimum (fuel bowser reserve RES-02, medical pallets
+                   RES-06) to exercise the deferral rule
+    4 regions    — Northern Corridor (airspace RESTRICTED),
+                   Coastal Sector (weather RESTRICTED),
+                   Central Highlands and Eastern Valley (clear)
+    13 tasks     — the feasible critical medical resupply, logistics under the
+                   restricted northern corridor, training under restricted
+                   coastal weather, a rotary lift with no rotary airframe
+                   currently serviceable, a task with no qualified crew, a
+                   task deferred by resource minimums, and priority contention
+                   for transport crews; plus one COMPLETED task for history
+
+  After writing the rows, the seed RUNS THE REAL ENGINE and applies the
+  resulting plan (backdated 2 hours), so the seeded world is always internally
+  consistent with the allocator. It also writes seven narrative audit entries
+  (scenario loaded, maintenance opened, advisories, resource low, task
+  completed) so the activity log tells a story from the first launch.
+
+
+--------------------------------------------------------------------------------
+14. TESTING STRATEGY
+--------------------------------------------------------------------------------
+
+  tests/allocation.test.ts   Pure engine tests against in-memory fixtures
+                             (tests/fixtures.ts): availability rules, readiness
+                             minimum, qualification matching, weather/airspace
+                             policy (+ exemptions), maintenance and turnaround
+                             timing, priority ordering, scoring formula,
+                             resource scarcity and minimum deferral, overlap
+                             prevention and reuse, prebooking reservation,
+                             utilisation accounting, fleet-gap violation,
+                             skip rules, and full determinism.
+
+  tests/service.test.ts      Orchestration integration tests against the same
+                             SQLite file the demo uses (re-seeded at test
+                             time): stale-plan rejection, consistent apply,
+                             scenario -> fresh recommendations, unavailable
+                             aircraft replanning, reset restoring the initial
+                             state.
+
+  Run: npm test (vitest run). 26 tests total; the design target is that engine
+  rules are provable without a database and service rules are provable end to
+  end.
+
+
+--------------------------------------------------------------------------------
+15. SECURITY, SAFETY AND ENVIRONMENT
+--------------------------------------------------------------------------------
+
+  * Simulation-only by design: synthetic data, standing UI notice, no
+    external feeds, no real-world identifiers.
+  * Stateless front end: no user data persisted in the browser beyond the
+    session's own view state.
+  * Input trust boundary: every request body is Zod-validated (types, ranges,
+    enums, date parsing, window ordering) before it reaches the service layer.
+  * SQL safety via Prisma parameterised queries; no string-built SQL.
+  * Error hygiene: unexpected errors are logged server-side and returned to
+    the client as a generic 500 without internals.
+  * Known limitation: no authentication / authorisation and no multi-user
+    locking (single-operator demo; last write wins between concurrent editors,
+    stale plans are caught by the data-version check).
+
+
+--------------------------------------------------------------------------------
+16. DEPLOYMENT AND RUNTIME
+--------------------------------------------------------------------------------
+
+  Local/demo:
+      npm install
+      npm run setup          # prisma generate + db push + deterministic seed
+      npm run dev            # http://localhost:3000
+
+  Other scripts:
+      npm run build / npm start      production build / serve
+      npm run lint                   ESLint (flat config)
+      npm test                       Vitest suite
+      npm run db:reset               reseed demo data from scratch
+
+  Configuration: single env var DATABASE_URL (SQLite file, default
+  prisma/dev.db). Next.js 16 with Turbopack; turbopack.root is pinned in
+  next.config.ts so the workspace root is never inferred outside the repo.
+  Node.js 20+.
+
+  Production path (out of scope for the demo): hosted Node server or
+  serverless Next.js, Prisma migrated to PostgreSQL, auth in front of
+  /api/**, scheduled generation, and a separate read replica for reporting.
+
+
+--------------------------------------------------------------------------------
+17. PROJECT STRUCTURE
+--------------------------------------------------------------------------------
+
+  prisma/schema.prisma          8 models (section 5)
+  prisma/seed.ts                CLI entry for the deterministic seed
+  src/app/**/page.tsx           6 client pages (presentation layer)
+  src/app/api/**/route.ts       17 route files / 19 endpoints (API layer)
+  src/components/shell.tsx      app shell (nav, header, sim notice)
+  src/components/ui.tsx         hand-drawn UI kit
+  src/lib/client.ts             browser fetch wrapper + refetch broadcast
+  src/lib/api.ts                server response helpers + error mapping
+  src/lib/validation.ts         Zod request schemas
+  src/lib/errors.ts             ServiceError (status + details)
+  src/lib/domain.ts             vocabularies, priority ranks/weights
+  src/lib/policy.ts             all operating thresholds + region rules
+  src/lib/allocation.ts         pure allocation engine + scoring
+  src/lib/plans.ts              plan store: persist / validate / apply
+  src/lib/repository.ts         data access + data-version fingerprint +
+                                 releaseTaskAssignment (resource ledger)
+  src/lib/seed.ts               deterministic demo dataset + initial plan
+  src/lib/prisma.ts             Prisma client singleton
+  src/services/operations-orchestrator.ts   the single orchestrator
+  tests/                        allocation + service test suites + fixtures
+
+
+--------------------------------------------------------------------------------
+18. LIMITATIONS AND FUTURE SCOPE
+--------------------------------------------------------------------------------
+
+  Current limitations
+    * Greedy engine: fast and explainable, not globally optimal (stated in
+      the UI copy and the docs).
+    * Single-operator demo: no auth, no role separation, no concurrent-edit
+      locking beyond the stale-plan check.
+    * SQLite: single-writer, laptop-grade; fine for the demo, not for load.
+    * All quantities are synthetic; no live telemetry or real-world feeds.
+
+  Candidate extensions (NOT implemented)
+    * Live operations map: plot the current (simulated) sortie state on a map
+      of India — and, as a separate opt-in module, integrate a public ADS-B
+      feed for real traffic awareness.
+    * Swap SQLite -> PostgreSQL and add authentication + roles (planner /
+      reviewer / auditor).
+    * Scheduled auto-generation with operator approval queue.
+    * Plan export (PDF/CSV) and e-mail notifications for blocked critical
+      tasks.
+    * What-if cost model (fuel burn, crew hours) as an additional score term,
+      with the weights kept in src/lib/policy.ts.
+
+================================================================================
+END OF DOCUMENT
+================================================================================
